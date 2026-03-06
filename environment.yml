@@ -1,0 +1,53 @@
+name: car-damage-vit
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+
+  - pip:
+    # ---------------------------------------------------------------
+    # PyTorch — instalación genérica (CPU / MPS en Apple Silicon)
+    #
+    # Si usás Linux o Windows con GPU NVIDIA, reemplazá con:
+    #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+    # (o cu121 dependiendo de tu versión de CUDA)
+    # ---------------------------------------------------------------
+    - torch>=2.0.0
+    - torchvision>=0.15.0
+
+    # HuggingFace
+    - transformers>=4.35.0
+    - datasets>=2.14.0
+    - accelerate>=0.24.0
+
+    # Visión y modelos
+    - timm>=0.9.0
+    - pycocotools>=2.0.7
+    - Pillow>=10.0.0
+
+    # Datos y métricas
+    - numpy>=1.24.0
+    - scikit-learn>=1.3.0
+
+    # Visualización
+    - matplotlib>=3.7.0
+    - seaborn>=0.12.0
+
+    # Configuración y utilidades
+    - pyyaml>=6.0
+
+    # API
+    - fastapi>=0.104.0
+    - uvicorn>=0.24.0
+    - python-multipart>=0.0.6
+
+    # Notebooks
+    - jupyter>=1.0.0
+    - ipykernel>=6.0.0
+
+    # Tests
+    - pytest>=7.4.0

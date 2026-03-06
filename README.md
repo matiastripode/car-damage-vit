@@ -52,17 +52,39 @@ car-damage-vit/
 
 ## Cómo arrancar
 
+### 1. Crear el entorno
+
 ```bash
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate car-damage-vit
 ```
 
-Para bajar el dataset:
+### 2. GPU — configuración por plataforma
+
+| Plataforma | Qué hacer |
+|---|---|
+| macOS Apple Silicon (M1/M2/M3) | Nada extra. PyTorch usa MPS automáticamente. |
+| Linux / Windows con GPU NVIDIA | Ver abajo. |
+
+En Linux o Windows con CUDA, después de crear el entorno:
+
+```bash
+# CUDA 11.8
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# CUDA 12.1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+Para saber qué versión de CUDA tenés: `nvidia-smi`
+
+### 3. Descargar el dataset
 
 ```bash
 python scripts/descargar_dataset.py
 ```
 
-Para entrenar:
+### 4. Entrenar
 
 ```bash
 python scripts/entrenar.py --config configs/model/deit_tiny.yaml --env dev
@@ -73,4 +95,4 @@ python scripts/entrenar.py --config configs/model/deit_tiny.yaml --env dev
 ## Requisitos
 
 - Python 3.10+
-- GPU recomendada (compatible con Google Colab T4)
+- GPU recomendada (MPS en Apple Silicon, CUDA en Linux/Windows, o Google Colab T4)
