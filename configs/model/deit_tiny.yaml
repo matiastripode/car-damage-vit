@@ -1,0 +1,9 @@
+modelo: facebook/deit-tiny-patch16-224
+num_clases: 6
+lr: 2.0e-5
+batch_size: 32
+epochs: 15
+warmup_ratio: 0.1
+weight_decay: 0.01
+seed: 42
+tamano_parche: 224

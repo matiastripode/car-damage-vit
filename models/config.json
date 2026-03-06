@@ -1,0 +1,15 @@
+{
+  "nombre": "car-damage-vit",
+  "tipo": "clasificador-de-imagenes",
+  "version": "0.1.0",
+  "clases": [
+    "dent",
+    "scratch",
+    "crack",
+    "glass_shatter",
+    "tire_flat",
+    "lamp_broken"
+  ],
+  "entradas": ["imagen 224x224 RGB"],
+  "salidas": ["clase", "confianza"]
+}

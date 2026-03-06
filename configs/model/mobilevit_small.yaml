@@ -1,0 +1,9 @@
+modelo: apple/mobilevit-small
+num_clases: 6
+lr: 1.0e-4
+batch_size: 32
+epochs: 15
+warmup_ratio: 0.1
+weight_decay: 0.01
+seed: 42
+tamano_parche: 224
