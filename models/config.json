@@ -8,7 +8,8 @@
     "crack",
     "glass_shatter",
     "tire_flat",
-    "lamp_broken"
+    "lamp_broken",
+    "fondo"
   ],
   "entradas": ["imagen 224x224 RGB"],
   "salidas": ["clase", "confianza"]

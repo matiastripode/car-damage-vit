@@ -1,5 +1,5 @@
 modelo: facebook/deit-tiny-patch16-224
-num_clases: 6
+num_clases: 7  # 6 tipos de daño + clase "fondo"
 lr: 2.0e-5
 batch_size: 32
 epochs: 15

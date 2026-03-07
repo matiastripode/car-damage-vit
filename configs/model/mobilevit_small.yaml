@@ -1,5 +1,5 @@
 modelo: apple/mobilevit-small
-num_clases: 6
+num_clases: 7  # 6 tipos de daño + clase "fondo"
 lr: 1.0e-4
 batch_size: 32
 epochs: 15
