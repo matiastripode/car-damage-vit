@@ -1,25 +1,30 @@
+import json
 import random
+from pathlib import Path
 
 import numpy as np
-from datasets import load_dataset
+from PIL import Image
 from torch.utils.data import Dataset
 
 CLASES = ["dent", "scratch", "crack", "glass_shatter", "tire_flat", "lamp_broken"]
 CLASES_CON_FONDO = CLASES + ["fondo"]
 TAMANO_PARCHE = 224
 
-# ── Nombres de campos del dataset ─────────────────────────────────────────────
-# Si la estructura del dataset es distinta, ajustar estos valores.
-# Para verificar: llamar a inspeccionar_muestra() desde el notebook de EDA.
-CAMPO_IMAGEN = "image"
-CAMPO_OBJETOS = "objects"    # puede ser "annotations" según el dataset
-CAMPO_BBOX = "bbox"          # formato esperado: [x, y, w, h]
-CAMPO_CATEGORIA = "category"
+# Mapeo COCO category_id (base 1) → índice de clase interno (base 0)
+CAT_ID_A_CLASE = {i + 1: nombre for i, nombre in enumerate(CLASES)}
+
+# Ruta por defecto a los JSONs COCO generados por exportar_anotaciones.py
+_RAIZ_PROYECTO = Path(__file__).resolve().parent.parent.parent.parent
+RUTA_ANOTACIONES = _RAIZ_PROYECTO / "data" / "raw" / "annotations"
 
 
 class CarDamageDataset(Dataset):
     """
     Dataset de parches 224x224 extraídos de las imágenes de alta resolución del CarDD.
+
+    Las anotaciones se leen desde los archivos COCO JSON generados por
+    scripts/exportar_anotaciones.py. Cada archivo contiene rutas absolutas
+    a las imágenes originales junto con sus bounding boxes y categorías.
 
     Estrategia de parcheo (Opción B):
     - Un parche positivo centrado en cada instancia de daño anotada.
@@ -28,14 +33,15 @@ class CarDamageDataset(Dataset):
 
     Args:
         split:          "train", "validation" o "test"
-        transform:      transformaciones a aplicar sobre cada parche
+        transform:      transformaciones a aplicar sobre cada parche (PIL → Tensor)
         ratio_fondo:    parches de fondo por cada parche positivo (default 1.0)
         incluir_fondo:  si True, agrega parches de fondo como clase extra
-        semilla:        semilla para reproducibilidad
+        semilla:        semilla para reproducibilidad del muestreo de fondo
+        ruta_anots:     ruta alternativa al directorio de JSONs COCO (opcional)
     """
 
     def __init__(self, split="train", transform=None, ratio_fondo=1.0,
-                 incluir_fondo=True, semilla=42):
+                 incluir_fondo=True, semilla=42, ruta_anots=None):
         self.split = split
         self.transform = transform
         self.ratio_fondo = ratio_fondo
@@ -46,9 +52,22 @@ class CarDamageDataset(Dataset):
         random.seed(semilla)
         np.random.seed(semilla)
 
-        print(f"Cargando CarDD [{split}]...")
-        self.datos = load_dataset("harpreetsahota/CarDD", split=split)
-        print(f"  → {len(self.datos)} imágenes")
+        ruta = Path(ruta_anots) if ruta_anots else RUTA_ANOTACIONES
+        ruta_json = ruta / f"{split}.json"
+
+        if not ruta_json.exists():
+            raise FileNotFoundError(
+                f"No se encontró {ruta_json}.\n"
+                "Corré primero: python scripts/exportar_anotaciones.py"
+            )
+
+        print(f"Cargando anotaciones [{split}] desde {ruta_json}...")
+        with open(ruta_json) as f:
+            coco = json.load(f)
+
+        self._imagenes = {img["id"]: img for img in coco["images"]}
+        self._anots_por_imagen = _agrupar_por_imagen(coco["annotations"])
+        print(f"  → {len(self._imagenes)} imágenes | {len(coco['annotations'])} anotaciones")
 
         print("Construyendo lista de parches...")
         self.parches = self._construir_parches()
@@ -59,9 +78,7 @@ class CarDamageDataset(Dataset):
 
     def __getitem__(self, idx):
         info = self.parches[idx]
-        muestra = self.datos[info["idx_muestra"]]
-        imagen = muestra[CAMPO_IMAGEN]
-
+        imagen = Image.open(info["ruta_imagen"]).convert("RGB")
         parche = imagen.crop(info["coordenadas"])
         etiqueta = info["etiqueta"]
 
@@ -75,20 +92,34 @@ class CarDamageDataset(Dataset):
     def _construir_parches(self):
         parches = []
 
-        for idx_muestra, muestra in enumerate(self.datos):
-            imagen = muestra[CAMPO_IMAGEN]
-            ancho, alto = imagen.size
+        for img_id, img_info in self._imagenes.items():
+            anots_coco = self._anots_por_imagen.get(img_id, [])
+            if not anots_coco:
+                continue
 
-            anotaciones = self._extraer_anotaciones(muestra)
+            ancho = img_info["width"]
+            alto = img_info["height"]
+            ruta_imagen = img_info["file_name"]
+
+            anotaciones = []
+            for ann in anots_coco:
+                nombre = CAT_ID_A_CLASE.get(ann["category_id"])
+                if nombre is None:
+                    continue
+                anotaciones.append({
+                    "bbox": ann["bbox"],
+                    "etiqueta_idx": CLASES.index(nombre),
+                })
+
             if not anotaciones:
                 continue
 
-            # Un parche positivo por cada instancia de daño
+            # Un parche positivo centrado en cada bounding box
             parches_pos = []
             for ann in anotaciones:
                 coordenadas = self._centrar_parche(ann["bbox"], ancho, alto)
                 parches_pos.append({
-                    "idx_muestra": idx_muestra,
+                    "ruta_imagen": ruta_imagen,
                     "coordenadas": coordenadas,
                     "etiqueta": ann["etiqueta_idx"],
                 })
@@ -99,35 +130,11 @@ class CarDamageDataset(Dataset):
             if self.incluir_fondo:
                 n_fondo = max(1, int(len(parches_pos) * self.ratio_fondo))
                 parches_fondo = self._extraer_parches_fondo(
-                    idx_muestra, anotaciones, n_fondo, ancho, alto
+                    ruta_imagen, anotaciones, n_fondo, ancho, alto
                 )
                 parches.extend(parches_fondo)
 
         return parches
-
-    def _extraer_anotaciones(self, muestra):
-        """
-        Extrae las anotaciones en formato normalizado [{bbox, etiqueta_idx}].
-
-        Si los campos del dataset no coinciden, ajustar las constantes
-        CAMPO_OBJETOS, CAMPO_BBOX y CAMPO_CATEGORIA al inicio del archivo.
-        """
-        anotaciones = []
-        objetos = muestra.get(CAMPO_OBJETOS, {})
-
-        bboxes = objetos.get(CAMPO_BBOX, [])
-        categorias = objetos.get(CAMPO_CATEGORIA, [])
-
-        for bbox, categoria in zip(bboxes, categorias):
-            nombre = _normalizar_categoria(categoria)
-            if nombre not in CLASES:
-                continue
-            anotaciones.append({
-                "bbox": bbox,
-                "etiqueta_idx": CLASES.index(nombre),
-            })
-
-        return anotaciones
 
     def _centrar_parche(self, bbox, ancho_img, alto_img):
         """Calcula coordenadas (x1, y1, x2, y2) de un parche centrado en el bbox."""
@@ -146,7 +153,7 @@ class CarDamageDataset(Dataset):
 
         return (x1, y1, x1 + t, y1 + t)
 
-    def _extraer_parches_fondo(self, idx_muestra, anotaciones, n_parches, ancho_img, alto_img):
+    def _extraer_parches_fondo(self, ruta_imagen, anotaciones, n_parches, ancho_img, alto_img):
         """Extrae parches aleatorios que no se superpongan significativamente con daños."""
         t = self.tamano
         MAX_INTENTOS = 50
@@ -159,7 +166,7 @@ class CarDamageDataset(Dataset):
 
                 if not self._solapa_con_daño([x1, y1, t, t], anotaciones):
                     parches.append({
-                        "idx_muestra": idx_muestra,
+                        "ruta_imagen": ruta_imagen,
                         "coordenadas": (x1, y1, x1 + t, y1 + t),
                         "etiqueta": len(CLASES),  # índice de "fondo"
                     })
@@ -213,29 +220,11 @@ class CarDamageDataset(Dataset):
         return torch.tensor([pesos_por_clase[p["etiqueta"]] for p in self.parches])
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────────
 
-def _normalizar_categoria(categoria):
-    """Convierte el valor de categoría del dataset al nombre interno de la clase."""
-    if isinstance(categoria, int):
-        return CLASES[categoria] if categoria < len(CLASES) else "desconocido"
-    return str(categoria).lower().replace(" ", "_")
-
-
-def inspeccionar_muestra(split="train"):
-    """
-    Carga una sola muestra e imprime su estructura completa.
-    Llamar desde el notebook de EDA para verificar los nombres de los campos
-    antes de entrenar.
-
-    Ejemplo de uso:
-        from vit.data.dataset import inspeccionar_muestra
-        inspeccionar_muestra("train")
-    """
-    ds = load_dataset("harpreetsahota/CarDD", split=split)
-    muestra = ds[0]
-    print("Claves disponibles:", list(muestra.keys()))
-    for clave, valor in muestra.items():
-        if clave != CAMPO_IMAGEN:
-            print(f"  {clave}: {valor}")
-    print(f"  {CAMPO_IMAGEN}: PIL.Image de tamaño {muestra[CAMPO_IMAGEN].size}")
+def _agrupar_por_imagen(anotaciones):
+    """Agrupa las anotaciones COCO por image_id."""
+    grupos = {}
+    for ann in anotaciones:
+        grupos.setdefault(ann["image_id"], []).append(ann)
+    return grupos
