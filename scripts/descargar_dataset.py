@@ -54,9 +54,15 @@ def descargar(ruta_salida: Path, semilla: int):
 
     inicio = time.time()
 
-    print("Descargando split 'train' completo desde HuggingFace...")
-    ds_completo = load_dataset(DATASET_ID, split="train")
-    print(f"Total de imágenes descargadas: {len(ds_completo)}")
+    ruta_train = ruta_salida / "train"
+    if ruta_train.exists():
+        print("Split 'train' encontrado en disco, cargando sin re-descargar...")
+        from datasets import load_from_disk
+        ds_completo = load_from_disk(str(ruta_train))
+    else:
+        print("Descargando split 'train' completo desde HuggingFace...")
+        ds_completo = load_dataset(DATASET_ID, split="train")
+    print(f"Total de imágenes: {len(ds_completo)}")
     print()
 
     # Dividir en train y temp (val + test)
