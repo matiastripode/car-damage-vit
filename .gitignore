@@ -28,6 +28,8 @@ data/processed/*
 
 # Modelos y checkpoints
 checkpoints/*
+notebooks/checkpoints
+notebooks/runs
 !checkpoints/.gitkeep
 *.pt
 *.pth
