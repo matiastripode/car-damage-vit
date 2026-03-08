@@ -7,9 +7,15 @@ MODELOS_SOPORTADOS = [
 ]
 
 
-def cargar_modelo(nombre: str, num_clases: int):
+def cargar_modelo(nombre: str, num_clases: int, attn_implementation: str = None):
     """
     Carga un modelo desde HuggingFace y adapta la cabeza de clasificación.
+
+    Args:
+        nombre:               ID del modelo en HuggingFace
+        num_clases:           número de clases de salida
+        attn_implementation:  implementación de atención ('eager', 'sdpa', None=auto).
+                              Usar 'eager' si se necesita output_attentions=True.
 
     Returns:
         (modelo, procesador)
@@ -18,9 +24,10 @@ def cargar_modelo(nombre: str, num_clases: int):
         raise ValueError(f"Modelo no soportado: {nombre}. Opciones: {MODELOS_SOPORTADOS}")
 
     procesador = AutoImageProcessor.from_pretrained(nombre, use_fast=True)
-    modelo = AutoModelForImageClassification.from_pretrained(
-        nombre,
-        num_labels=num_clases,
-        ignore_mismatched_sizes=True,
-    )
+
+    kwargs = dict(num_labels=num_clases, ignore_mismatched_sizes=True)
+    if attn_implementation is not None:
+        kwargs["attn_implementation"] = attn_implementation
+
+    modelo = AutoModelForImageClassification.from_pretrained(nombre, **kwargs)
     return modelo, procesador
