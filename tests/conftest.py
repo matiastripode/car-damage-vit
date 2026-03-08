@@ -1,5 +1,8 @@
 import sys
 from pathlib import Path
 
-# Agrega src/ al path para que los módulos de vit sean importables sin instalación
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+ROOT = Path(__file__).parent.parent
+# src/ para módulos de vit
+sys.path.insert(0, str(ROOT / "src"))
+# raíz para app/
+sys.path.insert(0, str(ROOT))
