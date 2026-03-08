@@ -10,5 +10,5 @@ def raiz():
 
 @app.post("/predecir")
 async def predecir(archivo: UploadFile = File(...)):
-    # pendiente: cargar modelo y procesar imagen
-    pass
+    # TODO (#10): reemplazar mock por pipeline real (cargar modelo, preprocesar imagen, inferencia)
+    return {"clase": "dent", "confianza": 0.95}
