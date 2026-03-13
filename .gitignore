@@ -60,3 +60,14 @@ reports/figuras/*
 # Variables de entorno
 .env
 .env.*
+
+# iOS / Xcode
+ios/*.xcodeproj/xcuserdata/
+ios/*.xcworkspace/xcuserdata/
+ios/*.xcworkspace/xcshareddata/
+ios/DerivedData/
+ios/build/
+ios/*.xcarchive
+ios/Pods/
+ios/.build/
+*.xcuserstate
