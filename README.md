@@ -92,6 +92,71 @@ python scripts/entrenar.py --config configs/model/deit_tiny.yaml --env dev
 
 ---
 
+## API de inferencia
+
+### Levantar la API localmente
+
+```bash
+conda activate car-damage-vit
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+> Usar `python -m uvicorn` (no `uvicorn` directamente) para garantizar que se usa el Python del entorno conda y no el del sistema.
+
+Verificar que está corriendo:
+
+```bash
+curl http://localhost:8000/
+# {"estado":"ok","version":"0.1.0","modelo":"mobilevit-small"}
+```
+
+Probar inferencia:
+
+```bash
+curl -X POST http://localhost:8000/predecir \
+  -F "archivo=@data/sample_test.jpg" | python3 -m json.tool
+```
+
+Respuesta esperada:
+
+```json
+{
+    "clase": "scratch",
+    "confianza": 0.87,
+    "top3": [
+        {"clase": "scratch", "confianza": 0.87},
+        {"clase": "dent",    "confianza": 0.09},
+        {"clase": "crack",   "confianza": 0.02}
+    ]
+}
+```
+
+### Exponer la API al iPhone (demo)
+
+```bash
+ngrok http 8000
+```
+
+Ngrok genera una URL pública HTTPS (ej. `https://abc123.ngrok-free.app`) que el iPhone puede usar desde cualquier red. La URL cambia con cada sesión en el plan gratuito.
+
+Al hacer curl a través de ngrok, agregar el header para evitar la página de advertencia:
+
+```bash
+curl -X POST https://abc123.ngrok-free.app/predecir \
+  -H "ngrok-skip-browser-warning: true" \
+  -F "archivo=@data/sample_test.jpg" | python3 -m json.tool
+```
+
+### Dependencias adicionales de la API
+
+Si uvicorn o fastapi no están en el entorno:
+
+```bash
+pip install uvicorn fastapi python-multipart
+```
+
+---
+
 ## Requisitos
 
 - Python 3.10+
