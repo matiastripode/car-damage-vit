@@ -4,6 +4,83 @@ Clasificación de daños en vehículos usando Vision Transformers.
 
 ---
 
+## Arquitectura del sistema
+
+```mermaid
+graph TB
+    subgraph iPhone["📱 iPhone — SwiftUI App"]
+        UI["ContentView\nPhotosPicker + ResultadoView"]
+        SVC["APIService\nmultipart/form-data POST"]
+        UI -->|"UIImage seleccionada"| SVC
+        SVC -->|"Prediccion (clase, confianza, top3)"| UI
+    end
+
+    subgraph Tunnel["🌐 Túnel ngrok"]
+        NG["ngrok\nhttps://xxx.ngrok-free.app"]
+    end
+
+    subgraph Backend["🖥️ Mac — FastAPI (uvicorn :8000)"]
+        EP["POST /predecir\napp/main.py"]
+        INF["predecir_imagen()\nsrc/vit/inference/predecir.py"]
+        MDL["MobileViT-small\n~5.6M params · MPS"]
+        CKPT[("best_model.pt\ncheckpoints/mobilevit_small/")]
+        EP -->|"PIL Image"| INF
+        INF -->|"tensor [1,3,224,224]"| MDL
+        CKPT -.->|"load_state_dict"| MDL
+        MDL -->|"logits → softmax → top3"| INF
+        INF -->|"JSON response"| EP
+    end
+
+    subgraph Training["🔬 Entrenamiento (offline)"]
+        DS["CarDD dataset\n4000 imgs · 6 clases"]
+        PATCH["CarDamageDataset\nparches 224×224"]
+        TR["Fine-tuning\nlr=2e-4 · batch=32 · MPS"]
+        DS --> PATCH --> TR --> CKPT
+    end
+
+    SVC -->|"HTTPS POST\n/predecir"| NG
+    NG -->|"HTTP → localhost:8000"| EP
+    EP -->|"JSON"| NG
+    NG -->|"HTTPS"| SVC
+```
+
+---
+
+## Flujo de interacción — demo iPhone
+
+```mermaid
+sequenceDiagram
+    actor Usuario
+    participant App as ContentView<br/>(SwiftUI)
+    participant Svc as APIService<br/>(Swift)
+    participant Ngrok as ngrok<br/>(túnel HTTPS)
+    participant API as FastAPI<br/>POST /predecir
+    participant Inf as predecir_imagen()
+    participant Modelo as MobileViT-small<br/>(PyTorch · MPS)
+
+    Usuario->>App: Selecciona foto\n(PhotosPicker)
+    App->>App: onChange → carga UIImage\ncargando = true\nmuestra ProgressView
+    App->>Svc: predecir(imagen: UIImage)
+    Svc->>Svc: Convierte a JPEG (quality 0.8)\nArma multipart/form-data
+    Svc->>Ngrok: POST /predecir\nContent-Type: multipart/form-data
+    Ngrok->>API: HTTP POST → localhost:8000/predecir
+    API->>API: Lee UploadFile\nconvierte bytes → PIL Image RGB
+    API->>Inf: predecir_imagen(imagen, modelo, procesador, device)
+    Inf->>Inf: Resize 224×224\nAplica eval transforms\ntensor [1, 3, 224, 224]
+    Inf->>Modelo: forward(pixel_values=tensor)
+    Modelo-->>Inf: logits [1, 7]
+    Inf->>Inf: softmax → probs\nargmax → clase\ntop3 por prob desc.
+    Inf-->>API: {clase, confianza, top3}
+    API-->>Ngrok: HTTP 200 JSON
+    Ngrok-->>Svc: HTTPS 200 JSON
+    Svc->>Svc: JSONDecoder → Prediccion struct
+    Svc-->>App: Prediccion(clase, confianza, top3)
+    App->>App: prediccion = result\ncargando = false
+    App->>Usuario: Muestra ResultadoView\n─ clase en mayúsculas\n─ barra de confianza\n─ top 3 con porcentajes
+```
+
+---
+
 ## ¿De qué se trata?
 
 Fine-tuning de modelos ViT livianos sobre el dataset CarDD para identificar y clasificar tipos de daños en autos. El dataset cubre seis categorías: abolladuras, rayones, fisuras, roturas de vidrio, neumáticos pinchados y faros dañados.
@@ -147,17 +224,41 @@ curl -X POST https://abc123.ngrok-free.app/predecir \
   -F "archivo=@data/sample_test.jpg" | python3 -m json.tool
 ```
 
-### Dependencias adicionales de la API
+---
 
-Si uvicorn o fastapi no están en el entorno:
+## Docker
+
+La API puede levantarse como contenedor sin necesidad de instalar el entorno conda.
+Usa `requirements-prod.txt` (solo deps de inferencia) en lugar del `requirements.txt` completo.
 
 ```bash
-pip install uvicorn fastapi python-multipart
+docker build -t car-damage-vit .
+docker run -p 8000:8000 car-damage-vit
 ```
+
+> Dentro del contenedor el device es CPU (Docker en Mac no expone MPS). La latencia para una imagen es comparable a la de MPS para inferencia individual.
 
 ---
 
-## Requisitos
+## Dependencias
 
-- Python 3.10+
-- GPU recomendada (MPS en Apple Silicon, CUDA en Linux/Windows, o Google Colab T4)
+El proyecto tiene tres archivos de dependencias según el contexto:
+
+| Archivo | Uso | Deps incluidas |
+|---|---|---|
+| `requirements.txt` | Desarrollo completo (entrenamiento, notebooks, tests) | torch, transformers, datasets, fiftyone, scikit-learn, matplotlib, pytest, ... |
+| `requirements-prod.txt` | API de inferencia en producción / Docker | torch CPU, transformers, fastapi, uvicorn, Pillow, python-multipart |
+| `requirements-ci.txt` | Pipeline de CI (GitHub Actions) | subset para correr tests sin GPU |
+
+Para instalar según el contexto:
+
+```bash
+# Desarrollo local (entorno completo)
+conda env create -f environment.yml
+
+# Solo la API (sin conda, ej. servidor o Docker)
+pip install -r requirements-prod.txt
+
+# CI
+pip install -r requirements-ci.txt
+```
