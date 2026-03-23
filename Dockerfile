@@ -3,20 +3,10 @@ FROM python:3.10-slim AS builder
 
 WORKDIR /app
 
-# Instalar torch CPU-only (sin CUDA) para mantener la imagen liviana (~1.5 GB vs ~6 GB)
-RUN pip install --no-cache-dir \
-    torch==2.2.0+cpu \
-    torchvision==0.17.0+cpu \
-    --index-url https://download.pytorch.org/whl/cpu
-
 COPY requirements-prod.txt .
-# torch/torchvision ya instalados arriba; el resto viene del requirements-api
 RUN pip install --no-cache-dir \
-    transformers>=4.35.0 \
-    Pillow>=10.0.0 \
-    fastapi>=0.104.0 \
-    uvicorn>=0.24.0 \
-    python-multipart>=0.0.6
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r requirements-prod.txt
 
 # ── runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.10-slim
