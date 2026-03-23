@@ -50,6 +50,33 @@ services:
       - traefik.http.routers.web.priority=1
       - traefik.http.services.web.loadbalancer.server.port=8501
 
+  mlflow:
+    image: python:3.10-slim
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir mlflow==2.17.2 datasets>=2.14.0 Pillow>=10.0.0 &&
+      (python /data/mlflow_bootstrap.py || true) &&
+      mlflow server
+      --host 0.0.0.0
+      --port 6000
+      --static-prefix /mlflow
+      --backend-store-uri sqlite:////mlruns/mlflow.db
+      --default-artifact-root /mlruns"
+    volumes:
+      - ./data:/data
+      - ./mlruns:/mlruns
+    ports:
+      - "6000:6000"
+    networks:
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mlflow.rule=Host(`localhost`) && PathPrefix(`/mlflow`)
+      - traefik.http.routers.mlflow.entrypoints=websecure
+      - traefik.http.routers.mlflow.tls=true
+      - traefik.http.routers.mlflow.priority=90
+      - traefik.http.services.mlflow.loadbalancer.server.port=6000
+
 networks:
   edge:
     driver: bridge

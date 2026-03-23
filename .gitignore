@@ -42,6 +42,7 @@ logs/*
 !logs/.gitkeep
 experiments/*
 !experiments/.gitkeep
+mlruns
 
 # Reportes generados
 reports/metricas/*
