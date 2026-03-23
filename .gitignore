@@ -35,6 +35,7 @@ notebooks/runs
 *.pth
 *.bin
 *.onnx
+fiftyone_config.json
 
 # Logs y experimentos
 logs/*
