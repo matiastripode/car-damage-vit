@@ -1,0 +1,82 @@
+services:
+  traefik:
+    image: traefik:v3.2
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - edge
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks:
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api.rule=Host(`localhost`) && PathPrefix(`/api`)
+      - traefik.http.routers.api.entrypoints=websecure
+      - traefik.http.routers.api.tls=true
+      - traefik.http.routers.api.priority=100
+      - traefik.http.routers.api.middlewares=api-strip
+      - traefik.http.middlewares.api-strip.stripprefix.prefixes=/api
+      - traefik.http.services.api.loadbalancer.server.port=8000
+
+  web:
+    build:
+      context: .
+      dockerfile: clients/web/Dockerfile
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      - api
+    networks:
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.web.rule=Host(`localhost`) && PathPrefix(`/`)
+      - traefik.http.routers.web.entrypoints=websecure
+      - traefik.http.routers.web.tls=true
+      - traefik.http.routers.web.priority=1
+      - traefik.http.services.web.loadbalancer.server.port=8501
+
+  mlflow:
+    image: python:3.10-slim
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir mlflow==2.17.2 datasets>=2.14.0 Pillow>=10.0.0 &&
+      (python /data/mlflow_bootstrap.py || true) &&
+      mlflow server
+      --host 0.0.0.0
+      --port 6000
+      --static-prefix /mlflow
+      --backend-store-uri sqlite:////mlruns/mlflow.db
+      --default-artifact-root /mlruns"
+    volumes:
+      - ./data:/data
+      - ./mlruns:/mlruns
+    ports:
+      - "6000:6000"
+    networks:
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mlflow.rule=Host(`localhost`) && PathPrefix(`/mlflow`)
+      - traefik.http.routers.mlflow.entrypoints=websecure
+      - traefik.http.routers.mlflow.tls=true
+      - traefik.http.routers.mlflow.priority=90
+      - traefik.http.services.mlflow.loadbalancer.server.port=6000
+
+networks:
+  edge:
+    driver: bridge

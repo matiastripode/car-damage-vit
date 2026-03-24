@@ -15,6 +15,7 @@ Uso:
 """
 
 import json
+import os
 import random
 import sys
 import time
@@ -34,6 +35,15 @@ CAT_ID = {nombre: i + 1 for i, nombre in enumerate(CATEGORIAS)}  # COCO: IDs des
 
 
 def exportar(ruta_salida: Path, semilla: int):
+    if sys.platform.startswith("linux"):
+        cfg_path = Path("fiftyone_config.json").resolve()
+        cfg_path.write_text(json.dumps({
+            "database_uri": "mongodb://localhost:27017"
+        }, indent=2))
+        # Decirle a FiftyOne que lea ESTA config.
+        os.environ["FIFTYONE_CONFIG_PATH"] = str(cfg_path)
+        print("Using FiftyOne config:", os.environ["FIFTYONE_CONFIG_PATH"])
+
     try:
         import fiftyone as fo
         from fiftyone.utils.huggingface import load_from_hub

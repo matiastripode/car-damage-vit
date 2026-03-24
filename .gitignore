@@ -35,12 +35,14 @@ notebooks/runs
 *.pth
 *.bin
 *.onnx
+fiftyone_config.json
 
 # Logs y experimentos
 logs/*
 !logs/.gitkeep
 experiments/*
 !experiments/.gitkeep
+mlruns
 
 # Reportes generados
 reports/metricas/*
