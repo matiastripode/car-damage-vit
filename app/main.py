@@ -16,6 +16,8 @@ from vit.inference.predecir import predecir_imagen
 from vit.models.factory import cargar_modelo
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+BASE_MODEL_NAME = os.getenv("BASE_MODEL_NAME", "apple/mobilevit-small")
+NUM_CLASSES = int(os.getenv("NUM_CLASSES", "7"))
 
 _state = {}
 
@@ -45,17 +47,93 @@ def _resolver_checkpoint() -> Path:
     raise FileNotFoundError(f"No se encontró checkpoint en: {ckpt_dir}")
 
 
+def _cargar_modelo_desde_registry():
+    """
+    Intenta cargar modelo desde MLflow Model Registry.
+    Prioridad:
+    1) alias explícito (MLFLOW_MODEL_ALIAS),
+    2) versión más alta en stage Production/Staging,
+    3) versión numérica más reciente.
+    """
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    model_name = os.getenv("MLFLOW_MODEL_NAME")
+    model_alias = os.getenv("MLFLOW_MODEL_ALIAS")
+
+    if not tracking_uri or not model_name:
+        return None, None
+
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+    except Exception as e:
+        print(f"[startup] MLflow no disponible en runtime: {e}. Fallback a checkpoint local.")
+        return None, None
+
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        client = MlflowClient(tracking_uri=tracking_uri)
+
+        if model_alias:
+            uri = f"models:/{model_name}@{model_alias}"
+            model = mlflow.pytorch.load_model(uri)
+            mv = client.get_model_version_by_alias(model_name, model_alias)
+            return model, {
+                "source": "mlflow_registry",
+                "model_uri": uri,
+                "model_name": model_name,
+                "model_version": str(mv.version),
+                "model_stage": (mv.current_stage or "").lower(),
+            }
+
+        versions = list(client.search_model_versions(f"name='{model_name}'"))
+        if not versions:
+            raise RuntimeError(f"No hay versiones para el modelo registrado '{model_name}'")
+
+        def _rank(v):
+            stage = (v.current_stage or "").lower()
+            stage_rank = {"production": 0, "staging": 1}.get(stage, 2)
+            return (stage_rank, -int(v.version))
+
+        best = sorted(versions, key=_rank)[0]
+        uri = f"models:/{model_name}/{best.version}"
+        model = mlflow.pytorch.load_model(uri)
+        return model, {
+            "source": "mlflow_registry",
+            "model_uri": uri,
+            "model_name": model_name,
+            "model_version": str(best.version),
+            "model_stage": (best.current_stage or "").lower(),
+        }
+    except Exception as e:
+        print(f"[startup] Falló carga desde MLflow Registry: {e}. Fallback a checkpoint local.")
+        return None, None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    checkpoint = _resolver_checkpoint()
-    modelo, procesador = cargar_modelo("apple/mobilevit-small", num_clases=7)
-    ckpt = torch.load(checkpoint, map_location="cpu")
-    modelo.load_state_dict(ckpt["model_state_dict"])
+    # Siempre cargamos el procesador desde Hugging Face para preprocesamiento.
+    modelo_base, procesador = cargar_modelo(BASE_MODEL_NAME, num_clases=NUM_CLASSES)
+    modelo_registry, meta_registry = _cargar_modelo_desde_registry()
+
+    if modelo_registry is not None:
+        modelo = modelo_registry
+        _state["model_source"] = meta_registry["source"]
+        _state["model_uri"] = meta_registry["model_uri"]
+        _state["model_name"] = meta_registry["model_name"]
+        _state["model_version"] = meta_registry["model_version"]
+        _state["model_stage"] = meta_registry["model_stage"]
+    else:
+        checkpoint = _resolver_checkpoint()
+        ckpt = torch.load(checkpoint, map_location="cpu")
+        modelo_base.load_state_dict(ckpt["model_state_dict"])
+        modelo = modelo_base
+        _state["model_source"] = "local_checkpoint"
+        _state["checkpoint"] = str(checkpoint)
+
     modelo.to(DEVICE).eval()
     _state["modelo"] = modelo
     _state["procesador"] = procesador
     _state["device"] = DEVICE
-    _state["checkpoint"] = str(checkpoint)
     yield
     _state.clear()
 
@@ -75,7 +153,12 @@ def raiz():
     return {
         "estado": "ok",
         "version": "0.1.0",
-        "modelo": "mobilevit-small",
+        "modelo": BASE_MODEL_NAME,
+        "model_source": _state.get("model_source"),
+        "model_uri": _state.get("model_uri"),
+        "model_name": _state.get("model_name"),
+        "model_version": _state.get("model_version"),
+        "model_stage": _state.get("model_stage"),
         "checkpoint": _state.get("checkpoint"),
     }
 

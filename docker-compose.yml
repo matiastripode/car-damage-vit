@@ -20,6 +20,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:6000
+      - MLFLOW_MODEL_NAME=car-damage-mobilevit
+      - MLFLOW_MODEL_ALIAS=production
+      - BASE_MODEL_NAME=apple/mobilevit-small
+      - NUM_CLASSES=7
+    depends_on:
+      - mlflow
     networks:
       - edge
     labels:
@@ -61,7 +69,8 @@ services:
       --port 6000
       --static-prefix /mlflow
       --backend-store-uri sqlite:////mlruns/mlflow.db
-      --default-artifact-root /mlruns"
+      --serve-artifacts
+      --artifacts-destination /mlruns"
     volumes:
       - ./data:/data
       - ./mlruns:/mlruns

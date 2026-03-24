@@ -148,6 +148,30 @@ def _ensure_mlflow_available() -> None:
         )
 
 
+def _validate_experiment_artifact_store(experiment_name: str, tracking_uri: str) -> None:
+    """
+    Evita entrenar horas para luego fallar al loguear artifacts.
+    Si el tracking es remoto (http/https), el experimento no debe usar paths locales.
+    """
+    if not tracking_uri.startswith(("http://", "https://")):
+        return
+
+    import mlflow
+
+    exp = mlflow.get_experiment_by_name(experiment_name)
+    if exp is None:
+        return
+
+    loc = (exp.artifact_location or "").strip()
+    if loc.startswith("/") or loc.startswith("file:"):
+        raise RuntimeError(
+            "El experimento de MLflow tiene artifact_location local "
+            f"({loc}) y desde este host no se puede escribir ahí.\n"
+            "Solución: recrear el experimento tras levantar MLflow con --serve-artifacts, "
+            "o usar un nuevo nombre de experimento."
+        )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Ruta al archivo de configuración del modelo")
@@ -187,6 +211,7 @@ if __name__ == "__main__":
         import mlflow
 
         mlflow.set_tracking_uri(args.mlflow_uri)
+        _validate_experiment_artifact_store(args.mlflow_experiment, args.mlflow_uri)
         mlflow.set_experiment(args.mlflow_experiment)
         run_name = f"train-{_slug_modelo(cfg['modelo'])}-{args.env}"
         run_ctx = mlflow.start_run(run_name=run_name, log_system_metrics=True)
