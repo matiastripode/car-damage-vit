@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import tempfile
 from io import BytesIO
 from pathlib import Path
@@ -11,9 +12,11 @@ from PIL import Image
 DATA_ROOT = Path("/data/raw")
 ANN_ROOT = DATA_ROOT / "annotations"
 SPLITS = ["train", "validation", "test"]
-TRACKING_URI = "sqlite:////mlruns/mlflow.db"
-EXPERIMENT = "cardd_dataset_inspection"
+# Permite reutilizar este script tanto en Docker (sqlite local) como desde pipeline local.
+TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:////mlruns/mlflow.db")
+EXPERIMENT = os.getenv("MLFLOW_DATASET_EXPERIMENT", "cardd_dataset_inspection")
 SAMPLE_RATIO = 0.10
+DATASET_VERSION = os.getenv("DATASET_VERSION", "unknown")
 
 
 def _count_files(path: Path) -> int:
@@ -90,6 +93,7 @@ def main():
     with mlflow.start_run(run_name="docker_startup_dataset_bootstrap"):
         mlflow.log_param("data_root", str(DATA_ROOT))
         mlflow.log_param("annotations_root", str(ANN_ROOT))
+        mlflow.log_param("dataset_version", DATASET_VERSION)
 
         for split in SPLITS:
             split_dir = DATA_ROOT / split

@@ -167,6 +167,63 @@ python scripts/descargar_dataset.py
 python scripts/entrenar.py --config configs/model/deit_tiny.yaml --env dev
 ```
 
+### 5. Entrenar con tracking en MLflow
+
+Si levantaste MLflow en Docker Compose:
+
+```bash
+docker compose up -d mlflow
+```
+
+Entrenamiento con logging de métricas por epoch, params, checkpoint e historial:
+
+```bash
+python scripts/entrenar.py \
+  --config configs/model/mobilevit_small.yaml \
+  --env dev \
+  --mlflow-uri http://localhost:6000 \
+  --mlflow-experiment car-damage-vit-train
+```
+
+Opcional: registrar el modelo en Model Registry de MLflow:
+
+```bash
+python scripts/entrenar.py \
+  --config configs/model/mobilevit_small.yaml \
+  --env dev \
+  --mlflow-uri http://localhost:6000 \
+  --mlflow-experiment car-damage-vit-train \
+  --mlflow-register-name car-damage-mobilevit
+```
+
+### 6. Evaluar checkpoint y loguear test en MLflow
+
+```bash
+python scripts/evaluar.py \
+  --checkpoint checkpoints/mobilevit_small/best_model.pt \
+  --config configs/model/mobilevit_small.yaml \
+  --env dev \
+  --mlflow-uri http://localhost:6000 \
+  --mlflow-experiment car-damage-vit-eval
+```
+
+Para vincular el run de evaluación con uno de entrenamiento:
+
+```bash
+python scripts/evaluar.py \
+  --checkpoint checkpoints/mobilevit_small/best_model.pt \
+  --config configs/model/mobilevit_small.yaml \
+  --env dev \
+  --mlflow-uri http://localhost:6000 \
+  --mlflow-experiment car-damage-vit-eval \
+  --train-run-id <RUN_ID_DE_TRAIN>
+```
+
+Esto genera además:
+
+- `reports/eval/mobilevit_small/metricas_test.json`
+- `reports/eval/mobilevit_small/confusion_matrix_test.png`
+
 ---
 
 ## API de inferencia
