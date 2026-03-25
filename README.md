@@ -296,6 +296,7 @@ Asignar alias a la última versión registrada para permitir carga por alias en 
 ```bash
 python -c "from mlflow.tracking import MlflowClient; c=MlflowClient('http://localhost:6000'); name='car-damage-mobilevit'; v=max(c.search_model_versions(f\"name='{name}'\"), key=lambda m:int(m.version)); c.set_registered_model_alias(name, 'production', v.version); print(f'Alias production -> v{v.version}')"
 ```
+>Nota: en la UI de MLFlow, dentro de Model Registry, el modelo debe mostrar Aliases: @ production
 
 Si la carga desde Registry falla por incompatibilidad de entorno o conectividad, mantener fallback automático en API hacia `checkpoints/mobilevit_small/best_model.pt`.
 
