@@ -124,53 +124,46 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor Usuario
-    participant Web as Streamlit UI<br/>(clients/web/app.py)
     participant Traefik as Traefik<br/>(SSL offload + routing)
+    participant Web as Streamlit UI<br/>(clients/web/app.py)
     participant API as FastAPI<br/>(app/main.py)
-    participant INF as predecir_imagen()
-    participant Modelo as MobileViT-small<br/>(registry o fallback)
     participant MLflow as MLflow Registry
 
-    Note over Traefik,API
-        SSL termina en Traefik
-        Hacia adentro del stack todo viaja por HTTP interno
-    end note
+    Usuario->>Traefik: HTTPS GET /
+    Traefik->>Web: HTTP GET /
+    Web-->>Traefik: HTTP 200 UI
+    Traefik-->>Usuario: HTTPS 200 UI
 
-    Usuario->>Web: Abrir https://localhost/
-    Web->>Traefik: HTTPS /
-    Traefik->>API: HTTP /
+    Usuario->>Traefik: HTTPS GET /api/
+    Traefik->>API: HTTP GET /
     API-->>Traefik: HTTP 200 estado del modelo
-    Traefik-->>Web: HTTPS 200 estado del modelo
-    Web-->>Usuario: Mostrar model_source / version / checkpoint
+    Traefik-->>Usuario: HTTPS 200 estado del modelo
+    Usuario->>Web: Mostrar model_source / version / checkpoint
 
     opt Recargar modelo desde MLflow
-        Usuario->>Web: Click "Cargar ultima desde MLflow"
-        Web->>Traefik: HTTPS /api/modelo/recargar
+        Usuario->>Traefik: HTTPS POST /api/modelo/recargar
         Traefik->>API: HTTP /modelo/recargar
         API->>MLflow: HTTP interno resolver versión registrada
         alt Carga registry OK
             MLflow-->>API: HTTP interno artefacto de modelo
             API-->>Traefik: HTTP 200 {model_source: mlflow_registry, version}
-            Traefik-->>Web: HTTPS 200 {model_source: mlflow_registry, version}
-            Web-->>Usuario: Mostrar éxito de recarga
+            Traefik-->>Usuario: HTTPS 200 {model_source: mlflow_registry, version}
+            Usuario->>Web: Mostrar éxito de recarga
         else Falla registry
             API-->>Traefik: HTTP 200 {model_source: local_checkpoint}
-            Traefik-->>Web: HTTPS 200 {model_source: local_checkpoint}
-            Web-->>Usuario: Informar fallback local
+            Traefik-->>Usuario: HTTPS 200 {model_source: local_checkpoint}
+            Usuario->>Web: Informar fallback local
         end
     end
 
-    Usuario->>Web: Subir imagen y seleccionar ROI 224x224
-    Usuario->>Web: Click "Predict ROI"
-    Web->>Traefik: HTTPS /api/predecir (multipart image)
+    Usuario->>Traefik: HTTPS POST /api/predecir (multipart image)
     Traefik->>API: HTTP /predecir
-    API->>INF: predecir_imagen(imagen, modelo, procesador, device)
-    INF->>Modelo: forward(pixel_values)
-    Modelo-->>INF: logits
-    INF-->>API: {clase, confianza, top3}
+    API->>API: predecir_imagen(imagen, modelo, procesador, device)
+    API->>API: forward modelo (registry o fallback)
+    API->>API: softmax + top3
     API-->>Traefik: HTTP 200 JSON
-    Traefik-->>Web: HTTPS 200 JSON
-    Web-->>Usuario: Mostrar predicción + top3 + confianza
+    Traefik-->>Usuario: HTTPS 200 JSON
+    Usuario->>Web: Mostrar predicción + top3 + confianza
 ```
 
 ---
