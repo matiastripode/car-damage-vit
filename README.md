@@ -19,29 +19,67 @@ graph TB
         NG["ngrok\nhttps://xxx.ngrok-free.app"]
     end
 
-    subgraph Backend["🖥️ Mac — FastAPI (uvicorn :8000)"]
-        EP["POST /predecir\napp/main.py"]
-        INF["predecir_imagen()\nsrc/vit/inference/predecir.py"]
-        MDL["MobileViT-small\n~5.6M params · MPS"]
-        CKPT[("best_model.pt\ncheckpoints/mobilevit_small/")]
-        EP -->|"PIL Image"| INF
+    subgraph Backend["🐳 Docker Compose Stack"]
+        NET{{"red interna\nbridge (edge)"}}
+
+        subgraph C_TRF["contenedor traefik"]
+            TRF["reverse proxy\nSSL/TLS"]
+        end
+
+        subgraph C_WEB["contenedor web"]
+            WEB["Streamlit UI\nclients/web/app.py"]
+        end
+
+        subgraph C_API["contenedor api"]
+            API["FastAPI\napp/main.py"]
+            INF["predecir_imagen()\nsrc/vit/inference/predecir.py"]
+            MDL["MobileViT-small\ninferencia CPU"]
+            CKPT[("best_model.pt\nsolo fallback local")]
+            TRN["job train/eval\npipeline_entrenar_evaluar.py"]
+        end
+
+        subgraph C_MLF["contenedor mlflow"]
+            MLF["tracking server + model registry"]
+            VOL[("mlruns_data\nartifacts + sqlite")]
+        end
+
+        WEB --- NET
+        API --- NET
+        MLF --- NET
+        TRF --- NET
+
+        TRF -->|"HTTP /"| WEB
+        TRF -->|"HTTP /api"| API
+        TRF -->|"HTTP /mlflow"| MLF
+
+        API -->|"PIL Image"| INF
         INF -->|"tensor [1,3,224,224]"| MDL
-        CKPT -.->|"load_state_dict"| MDL
+        CKPT -.->|"usar si falla registry"| MDL
         MDL -->|"logits → softmax → top3"| INF
-        INF -->|"JSON response"| EP
+        INF -->|"JSON response"| API
+
+        API <-->|"leer modelo registrado"| MLF
+        TRN -->|"registrar modelo + métricas"| MLF
+        MLF -->|"persistir"| VOL
     end
 
     subgraph Training["🔬 Entrenamiento (offline)"]
         DS["CarDD dataset\n4000 imgs · 6 clases"]
         PATCH["CarDamageDataset\nparches 224×224"]
-        TR["Fine-tuning\nlr=2e-4 · batch=32 · MPS"]
-        DS --> PATCH --> TR --> CKPT
+        DS --> PATCH --> TRN
     end
 
+    EXT["Internet / clientes externos"]
+
     SVC -->|"HTTPS POST\n/predecir"| NG
-    NG -->|"HTTP → localhost:8000"| EP
-    EP -->|"JSON"| NG
+    NG -->|"HTTPS → Traefik (SSL offload)"| TRF
+    TRF -->|"HTTPS response"| NG
     NG -->|"HTTPS"| SVC
+
+    WEB -->|"HTTP interno"| TRF
+    API -->|"HTTP interno"| TRF
+    MLF -->|"HTTP interno"| TRF
+    TRF -->|"HTTPS"| EXT
 ```
 
 ---
@@ -77,6 +115,55 @@ sequenceDiagram
     Svc-->>App: Prediccion(clase, confianza, top3)
     App->>App: prediccion = result\ncargando = false
     App->>Usuario: Muestra ResultadoView\n─ clase en mayúsculas\n─ barra de confianza\n─ top 3 con porcentajes
+```
+
+---
+
+## Flujo de interacción — interfaz web
+
+```mermaid
+sequenceDiagram
+    actor Usuario
+    participant Traefik as Traefik<br/>(SSL offload + routing)
+    participant Web as Streamlit UI<br/>(clients/web/app.py)
+    participant API as FastAPI<br/>(app/main.py)
+    participant MLflow as MLflow Registry
+
+    Usuario->>Traefik: HTTPS GET /
+    Traefik->>Web: HTTP GET /
+    Web-->>Traefik: HTTP 200 UI
+    Traefik-->>Usuario: HTTPS 200 UI
+
+    Usuario->>Traefik: HTTPS GET /api/
+    Traefik->>API: HTTP GET /
+    API-->>Traefik: HTTP 200 estado del modelo
+    Traefik-->>Usuario: HTTPS 200 estado del modelo
+    Usuario->>Web: Mostrar model_source / version / checkpoint
+
+    opt Recargar modelo desde MLflow
+        Usuario->>Traefik: HTTPS POST /api/modelo/recargar
+        Traefik->>API: HTTP /modelo/recargar
+        API->>MLflow: HTTP interno resolver versión registrada
+        alt Carga registry OK
+            MLflow-->>API: HTTP interno artefacto de modelo
+            API-->>Traefik: HTTP 200 {model_source: mlflow_registry, version}
+            Traefik-->>Usuario: HTTPS 200 {model_source: mlflow_registry, version}
+            Usuario->>Web: Mostrar éxito de recarga
+        else Falla registry
+            API-->>Traefik: HTTP 200 {model_source: local_checkpoint}
+            Traefik-->>Usuario: HTTPS 200 {model_source: local_checkpoint}
+            Usuario->>Web: Informar fallback local
+        end
+    end
+
+    Usuario->>Traefik: HTTPS POST /api/predecir (multipart image)
+    Traefik->>API: HTTP /predecir
+    API->>API: predecir_imagen(imagen, modelo, procesador, device)
+    API->>API: forward modelo (registry o fallback)
+    API->>API: softmax + top3
+    API-->>Traefik: HTTP 200 JSON
+    Traefik-->>Usuario: HTTPS 200 JSON
+    Usuario->>Web: Mostrar predicción + top3 + confianza
 ```
 
 ---
@@ -127,7 +214,7 @@ car-damage-vit/
 
 ---
 
-## Cómo arrancar
+## Cómo iniciar
 
 ### 1. Crear el entorno
 
@@ -136,9 +223,9 @@ conda env create -f environment.yml
 conda activate car-damage-vit
 ```
 
-### 2. GPU — configuración por plataforma
+### 2. Configurar GPU por plataforma
 
-| Plataforma | Qué hacer |
+| Plataforma | Acción a realizar |
 |---|---|
 | macOS Apple Silicon (M1/M2/M3) | Nada extra. PyTorch usa MPS automáticamente. |
 | Linux / Windows con GPU NVIDIA | Ver abajo. |
@@ -153,93 +240,64 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
-Para saber qué versión de CUDA tenés: `nvidia-smi`
+Verificar versión de CUDA: `nvidia-smi`
 
-### 3. Descargar el dataset
+### 3. Levantar stack local (MLflow + API + UI)
 
 ```bash
-python scripts/descargar_dataset.py
+docker compose build
+docker compose up -d
 ```
 
-### 4. Entrenar
+Consultar servicios principales:
+
+- Web UI (Streamlit): `https://localhost/`
+- API (vía Traefik): `https://localhost/api/`
+- MLflow UI: `https://localhost/mlflow`
+
+### 4. Ejecutar pipeline end-to-end (train + eval)
+
+Ejecutar `scripts/pipeline_entrenar_evaluar.py` en una sola corrida para dentro del entorno virtual del host:
+
+1. preparar datos (si faltan splits o anotaciones),
+2. entrenar,
+3. evaluar sobre test.
+
+Usar el siguiente comando recomendado:
 
 ```bash
-python scripts/entrenar.py --config model/deit_tiny.yaml --env dev
-```
-
-### 5. Entrenar con tracking en MLflow
-
-Si levantaste MLflow en Docker Compose:
-
-```bash
-docker compose up -d mlflow
-```
-
-Entrenamiento con logging de métricas por epoch, params, checkpoint e historial:
-
-```bash
- python scripts/pipeline_entrenar_evaluar.py \
-  --config configs/model/mobilevit_small.yaml \
-  --env dev \
-  --mlflow-uri http://localhost:6000 \
+python scripts/pipeline_entrenar_evaluar.py \
+  --config model/mobilevit_small.yaml \
+  --env dev --mlflow-uri http://localhost:6000 \
   --mlflow-train-experiment car-damage-vit-train \
   --mlflow-eval-experiment car-damage-vit-eval \
-  --mlflow-register-name car-damage-mobilevitc
+  --mlflow-register-name car-damage-mobilevit
 ```
 
-Además, al iniciar el run de entrenamiento se registra el dataset en el campo **Dataset** de MLflow y se suben como artifacts los contenidos de `data/raw/{train,validation,test}` y `data/raw/annotations`.
+### 5. Usar cada split del dataset en cada etapa
 
-Si `nvidia-ml-py` está instalado y hay GPU NVIDIA disponible, MLflow también registra métricas de GPU (`system/gpu_*`) además de CPU/memoria/disco y registra el modelo en Model Registry de MLflow:
+- `train`: usar para optimizar el modelo durante entrenamiento.
+- `validation`: usar para validar por época durante entrenamiento.
+- `test`: usar solo en la evaluación final (`scripts/evaluar.py`).
 
-Para que la API cargue desde Registry por alias (configurada con `MLFLOW_MODEL_ALIAS=production`), asigná el alias a la última versión registrada:
+Además, al iniciar el run de train, registrar el dataset en el campo **Dataset** de MLflow y subir artifacts de:
+
+- `data/raw/train`
+- `data/raw/validation`
+- `data/raw/test`
+- `data/raw/annotations`
+
+### 6. Registrar en Model Registry y asignar alias para serving
+
+Pasar `--mlflow-register-name car-damage-mobilevit` para registrar el modelo en MLflow Model Registry.
+
+Asignar alias a la última versión registrada para permitir carga por alias en API (configurada con `MLFLOW_MODEL_ALIAS=production`):
 
 ```bash
 python -c "from mlflow.tracking import MlflowClient; c=MlflowClient('http://localhost:6000'); name='car-damage-mobilevit'; v=max(c.search_model_versions(f\"name='{name}'\"), key=lambda m:int(m.version)); c.set_registered_model_alias(name, 'production', v.version); print(f'Alias production -> v{v.version}')"
 ```
 
-### 5.1 Pipeline completo recomendado (preparación + train + eval)
-
-Comando de referencia para correr el flujo end-to-end con registro en MLflow y Model Registry:
-
-```bash
-python scripts/pipeline_entrenar_evaluar.py --config model/mobilevit_small.yaml --env dev --mlflow-uri http://localhost:6000 --mlflow-train-experiment car-damage-vit-train --mlflow-eval-experiment car-damage-vit-eval --mlflow-register-name car-damage-mobilevit
-```
-
-### 5.2 Comando recomendado para generar run + Dataset + registro de modelo
-
-Este comando crea un run de entrenamiento en MLflow, guarda el Dataset en el campo **Dataset**, sube artifacts de `data/raw` y registra el modelo en Model Registry:
-
-```bash
-python scripts/entrenar.py --config model/mobilevit_small.yaml --env dev --mlflow-uri http://localhost:6000 --mlflow-experiment car-damage-vit-train --mlflow-register-name car-damage-mobilevit
-```
-
-### 6. Evaluar checkpoint y loguear test en MLflow
-
-```bash
-python scripts/evaluar.py \
-  --checkpoint checkpoints/mobilevit_small/best_model.pt \
-  --config model/mobilevit_small.yaml \
-  --env dev \
-  --mlflow-uri http://localhost:6000 \
-  --mlflow-experiment car-damage-vit-eval
-```
-
-Para vincular el run de evaluación con uno de entrenamiento:
-
-```bash
-python scripts/evaluar.py \
-  --checkpoint checkpoints/mobilevit_small/best_model.pt \
-  --config model/mobilevit_small.yaml \
-  --env dev \
-  --mlflow-uri http://localhost:6000 \
-  --mlflow-experiment car-damage-vit-eval \
-  --train-run-id <RUN_ID_DE_TRAIN>
-```
-
-Esto genera además:
-
-- `reports/eval/mobilevit_small/metricas_test.json`
-- `reports/eval/mobilevit_small/confusion_matrix_test.png`
+Si la carga desde Registry falla por incompatibilidad de entorno o conectividad, mantener fallback automático en API hacia `checkpoints/mobilevit_small/best_model.pt`.
 
 ---
 
@@ -254,7 +312,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 > Usar `python -m uvicorn` (no `uvicorn` directamente) para garantizar que se usa el Python del entorno conda y no el del sistema.
 
-Verificar que está corriendo:
+Verificar que esté corriendo:
 
 ```bash
 curl http://localhost:8000/
@@ -290,7 +348,7 @@ ngrok http 8000
 
 Ngrok genera una URL pública HTTPS (ej. `https://abc123.ngrok-free.app`) que el iPhone puede usar desde cualquier red. La URL cambia con cada sesión en el plan gratuito.
 
-Al hacer curl a través de ngrok, agregar el header para evitar la página de advertencia:
+Al ejecutar curl a través de ngrok, agregar el header para evitar la página de advertencia:
 
 ```bash
 curl -X POST https://abc123.ngrok-free.app/predecir \
@@ -316,29 +374,18 @@ Levantar servicios:
 docker compose up -d
 ```
 
-Servicios principales:
+Consultar servicios principales:
 
 - Web UI (Streamlit): `https://localhost/`
-- API (via Traefik): `https://localhost/api/`
-- MLflow UI: `http://localhost:6000/mlflow`
+- API (vía Traefik): `https://localhost/api/`
+- MLflow UI (vía Traefik): `https://localhost/mlflow`
 
-La UI web muestra el estado del modelo activo de la API y tiene el botón **Cargar ultima desde MLflow** (endpoint `POST /modelo/recargar`).
+Mostrar en la UI web el estado del modelo activo de la API y ofrecer el botón **Cargar ultima desde MLflow** (endpoint `POST /modelo/recargar`).
 
-Si la carga desde Model Registry falla por cualquier motivo, la API mantiene fallback automático al checkpoint local `checkpoints/mobilevit_small/best_model.pt`, y la UI lo informa en pantalla.
+Si la carga desde Model Registry falla por cualquier motivo, mantener fallback automático en la API al checkpoint local `checkpoints/mobilevit_small/best_model.pt` e informar ese estado en la UI.
 
-Los datos de tracking y artifacts de MLflow persisten en el volumen `mlruns_data`.
+Persistir los datos de tracking y artifacts de MLflow en el volumen `mlruns_data`.
 
-La API puede levantarse como contenedor sin necesidad de instalar el entorno conda.
-Usa `requirements-prod.txt` (solo deps de inferencia) en lugar del `requirements.txt` completo.
-
-```bash
-docker build -t car-damage-vit .
-docker run -p 8000:8000 car-damage-vit
-```
-
-> Dentro del contenedor el device es CPU (Docker en Mac no expone MPS). La latencia para una imagen es comparable a la de MPS para inferencia individual.
-
----
 
 ## Dependencias
 
@@ -350,7 +397,7 @@ El proyecto tiene tres archivos de dependencias según el contexto:
 | `requirements-prod.txt` | API de inferencia en producción / Docker | torch CPU, transformers, fastapi, uvicorn, Pillow, python-multipart |
 | `requirements-ci.txt` | Pipeline de CI (GitHub Actions) | subset para correr tests sin GPU |
 
-Para instalar según el contexto:
+Instalar según el contexto:
 
 ```bash
 # Desarrollo local (entorno completo)
