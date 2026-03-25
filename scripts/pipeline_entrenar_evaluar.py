@@ -17,10 +17,7 @@ Con MLflow:
 """
 
 import argparse
-import hashlib
 import importlib.util
-import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +28,6 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 DATA_RAW = ROOT / "data" / "raw"
 ANN_DIR = DATA_RAW / "annotations"
-DATASET_VERSION_FILE = DATA_RAW / ".dataset_version.json"
 
 
 def _run(cmd: list[str]) -> None:
@@ -86,45 +82,6 @@ def _checkpoint_esperado(cfg: dict) -> Path:
     return ROOT / output_dir / "best_model.pt"
 
 
-def _dataset_fingerprint() -> str:
-    """
-    Fingerprint del dataset/anotaciones para detectar cambios de versión.
-    Se basa en archivos de metadata y COCO JSON.
-    """
-    files = [
-        DATA_RAW / "train" / "dataset_info.json",
-        DATA_RAW / "validation" / "dataset_info.json",
-        DATA_RAW / "test" / "dataset_info.json",
-        ANN_DIR / "train.json",
-        ANN_DIR / "validation.json",
-        ANN_DIR / "test.json",
-    ]
-    h = hashlib.sha256()
-    used = 0
-    for p in files:
-        if p.exists():
-            h.update(p.read_bytes())
-            used += 1
-    if used == 0:
-        return "unknown"
-    return h.hexdigest()[:16]
-
-
-def _dataset_changed(current: str) -> bool:
-    """Compara fingerprint actual vs última versión registrada localmente."""
-    if not DATASET_VERSION_FILE.exists():
-        return True
-    try:
-        old = json.loads(DATASET_VERSION_FILE.read_text()).get("dataset_version")
-    except Exception:
-        return True
-    return old != current
-
-
-def _save_dataset_version(version: str) -> None:
-    DATASET_VERSION_FILE.write_text(json.dumps({"dataset_version": version}, indent=2))
-
-
 def _python_has_mlflow() -> bool:
     """Detecta si el intérprete actual tiene disponible el módulo mlflow."""
     return importlib.util.find_spec("mlflow") is not None
@@ -142,45 +99,6 @@ def _ensure_mlflow_for_local_scripts(args) -> None:
         )
 
 
-def _versionar_dataset_en_mlflow(args, dataset_version: str) -> None:
-    """
-    Ejecuta el bootstrap de versionado de dataset.
-    - Si mlflow está instalado en este entorno: corre local.
-    - Si no: intenta correr dentro del servicio docker `mlflow`.
-    """
-    env = dict(os.environ)
-    env["MLFLOW_TRACKING_URI"] = args.mlflow_uri
-    env["MLFLOW_DATASET_EXPERIMENT"] = args.mlflow_dataset_experiment
-    env["DATASET_VERSION"] = dataset_version
-
-    if _python_has_mlflow():
-        subprocess.run(
-            [sys.executable, "data/mlflow_bootstrap.py"],
-            check=True,
-            cwd=ROOT,
-            env=env,
-        )
-        return
-
-    print("mlflow no está instalado en este entorno. Intentando bootstrap en contenedor mlflow...")
-    docker_cmd = [
-        "docker",
-        "compose",
-        "exec",
-        "-T",
-        "mlflow",
-        "sh",
-        "-lc",
-        (
-            f"MLFLOW_TRACKING_URI='{args.mlflow_uri}' "
-            f"MLFLOW_DATASET_EXPERIMENT='{args.mlflow_dataset_experiment}' "
-            f"DATASET_VERSION='{dataset_version}' "
-            "python /data/mlflow_bootstrap.py"
-        ),
-    ]
-    subprocess.run(docker_cmd, check=True, cwd=ROOT)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Ruta al YAML de modelo")
@@ -188,7 +106,6 @@ if __name__ == "__main__":
     parser.add_argument("--mlflow-uri", default=None, help="URI de tracking MLflow (opcional)")
     parser.add_argument("--mlflow-train-experiment", default="car-damage-vit-train")
     parser.add_argument("--mlflow-eval-experiment", default="car-damage-vit-eval")
-    parser.add_argument("--mlflow-dataset-experiment", default="cardd_dataset_inspection")
     parser.add_argument("--mlflow-register-name", default=None)
     args = parser.parse_args()
 
@@ -208,22 +125,7 @@ if __name__ == "__main__":
     else:
         print("Anotaciones: OK")
 
-    # Paso 1.1: versionado de dataset en MLflow cuando hay cambios.
-    dataset_version = _dataset_fingerprint()
-    changed = _dataset_changed(dataset_version)
-    if changed:
-        if not args.mlflow_uri:
-            raise RuntimeError(
-                "El dataset cambió y debe versionarse en MLflow antes de entrenar. "
-                "Pasá --mlflow-uri para continuar."
-            )
-        print(f"Dataset cambiado. Versionando en MLflow (version={dataset_version})...")
-        _versionar_dataset_en_mlflow(args, dataset_version)
-        _save_dataset_version(dataset_version)
-    else:
-        print(f"Dataset sin cambios (version={dataset_version}).")
-
-    # Paso 1.2: validación temprana para evitar fallar tarde en train/eval.
+    # Paso 1.1: validación temprana para evitar fallar tarde en train/eval.
     _ensure_mlflow_for_local_scripts(args)
 
     # Paso 2: entrenamiento.

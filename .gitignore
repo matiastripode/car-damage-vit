@@ -27,11 +27,13 @@ data/processed/*
 !data/processed/.gitkeep
 
 # Modelos y checkpoints
-checkpoints/*
+#checkpoints/*
+checkpoints/.cache
+checkpoints/history.json
 notebooks/checkpoints
 notebooks/runs
 !checkpoints/.gitkeep
-*.pt
+#*.pt
 *.pth
 *.bin
 *.onnx
@@ -45,6 +47,7 @@ experiments/*
 mlruns
 
 # Reportes generados
+reports/*
 reports/metricas/*
 reports/figuras/*
 !reports/metricas/.gitkeep

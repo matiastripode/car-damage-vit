@@ -1,6 +1,6 @@
-torch==2.6.0+cpu
-torchvision==0.21.0+cpu
-transformers<5
+torch==2.11.0
+torchvision==0.26.0
+transformers==5.3.0
 mlflow>=2.14.0
 numpy<2
 Pillow>=10.0.0

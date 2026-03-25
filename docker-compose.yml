@@ -62,18 +62,18 @@ services:
     image: python:3.10-slim
     working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir mlflow==2.17.2 datasets>=2.14.0 Pillow>=10.0.0 &&
-      (python /data/mlflow_bootstrap.py || true) &&
+      sh -c "pip install --no-cache-dir mlflow==3.10.1 'datasets>=2.14.0' 'Pillow>=10.0.0' &&
       mlflow server
       --host 0.0.0.0
       --port 6000
+      --allowed-hosts *
       --static-prefix /mlflow
       --backend-store-uri sqlite:////mlruns/mlflow.db
       --serve-artifacts
       --artifacts-destination /mlruns"
     volumes:
       - ./data:/data
-      - ./mlruns:/mlruns
+      - mlruns_data:/mlruns
     ports:
       - "6000:6000"
     networks:
@@ -89,3 +89,6 @@ services:
 networks:
   edge:
     driver: bridge
+
+volumes:
+  mlruns_data:

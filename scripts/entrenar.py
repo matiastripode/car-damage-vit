@@ -120,6 +120,89 @@ def _dataset_fingerprint() -> str:
     return hasher.hexdigest()[:16]
 
 
+def _count_files_and_bytes(path: Path) -> tuple[int, int]:
+    if not path.exists():
+        return 0, 0
+    total_files = 0
+    total_bytes = 0
+    for p in path.rglob("*"):
+        if p.is_file():
+            total_files += 1
+            total_bytes += p.stat().st_size
+    return total_files, total_bytes
+
+
+def _count_images(path: Path) -> int:
+    if not path.exists():
+        return 0
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    return sum(1 for p in path.rglob("*") if p.is_file() and p.suffix.lower() in exts)
+
+
+def _build_dataset_rows(data_root: Path, ann_root: Path) -> list[dict]:
+    rows = []
+    for split in ("train", "validation", "test"):
+        split_dir = data_root / split
+        ann_file = ann_root / f"{split}.json"
+        files_count, bytes_count = _count_files_and_bytes(split_dir)
+        image_count = _count_images(split_dir)
+
+        ann_images = None
+        ann_annotations = None
+        if ann_file.exists():
+            try:
+                ann = json.loads(ann_file.read_text())
+                ann_images = len(ann.get("images", []))
+                ann_annotations = len(ann.get("annotations", []))
+            except Exception:
+                ann_images = None
+                ann_annotations = None
+
+        rows.append(
+            {
+                "split": split,
+                "split_path": str(split_dir.resolve()),
+                "files_count": files_count,
+                "bytes_count": bytes_count,
+                "image_files_count": image_count,
+                "annotations_path": str(ann_file.resolve()),
+                "annotations_exists": ann_file.exists(),
+                "ann_images_count": ann_images,
+                "ann_annotations_count": ann_annotations,
+            }
+        )
+    return rows
+
+
+def _log_dataset_to_mlflow(dataset_fingerprint: str) -> None:
+    import mlflow
+    import pandas as pd
+
+    data_root = Path("data/raw")
+    ann_root = data_root / "annotations"
+    if not data_root.exists():
+        raise FileNotFoundError(f"No existe la ruta de dataset: {data_root}")
+
+    rows = _build_dataset_rows(data_root, ann_root)
+    df = pd.DataFrame(rows)
+
+    ds = mlflow.data.from_pandas(
+        df,
+        source=str(data_root.resolve()),
+        name="cardd_raw_dataset",
+        digest=dataset_fingerprint,
+    )
+    mlflow.log_input(ds, context="training")
+
+    if ann_root.exists():
+        mlflow.log_artifacts(str(ann_root), artifact_path="dataset/annotations")
+
+    for split in ("train", "validation", "test"):
+        split_dir = data_root / split
+        if split_dir.exists():
+            mlflow.log_artifacts(str(split_dir), artifact_path=f"dataset/raw/{split}")
+
+
 def _find_registered_model_version(model_name: str, run_id: str):
     """
     Busca la versión de Model Registry creada por este run.
@@ -145,30 +228,6 @@ def _ensure_mlflow_available() -> None:
         raise RuntimeError(
             "Se pasó --mlflow-uri pero mlflow no está instalado en este entorno.\n"
             f"Instalalo con: {sys.executable} -m pip install mlflow>=2.14.0"
-        )
-
-
-def _validate_experiment_artifact_store(experiment_name: str, tracking_uri: str) -> None:
-    """
-    Evita entrenar horas para luego fallar al loguear artifacts.
-    Si el tracking es remoto (http/https), el experimento no debe usar paths locales.
-    """
-    if not tracking_uri.startswith(("http://", "https://")):
-        return
-
-    import mlflow
-
-    exp = mlflow.get_experiment_by_name(experiment_name)
-    if exp is None:
-        return
-
-    loc = (exp.artifact_location or "").strip()
-    if loc.startswith("/") or loc.startswith("file:"):
-        raise RuntimeError(
-            "El experimento de MLflow tiene artifact_location local "
-            f"({loc}) y desde este host no se puede escribir ahí.\n"
-            "Solución: recrear el experimento tras levantar MLflow con --serve-artifacts, "
-            "o usar un nuevo nombre de experimento."
         )
 
 
@@ -211,7 +270,6 @@ if __name__ == "__main__":
         import mlflow
 
         mlflow.set_tracking_uri(args.mlflow_uri)
-        _validate_experiment_artifact_store(args.mlflow_experiment, args.mlflow_uri)
         mlflow.set_experiment(args.mlflow_experiment)
         run_name = f"train-{_slug_modelo(cfg['modelo'])}-{args.env}"
         run_ctx = mlflow.start_run(run_name=run_name, log_system_metrics=True)
@@ -232,16 +290,18 @@ if __name__ == "__main__":
     with run_ctx:
         if mlflow_enabled:
             import mlflow
+            dataset_fp = _dataset_fingerprint()
 
             # Tags para trazabilidad entre código, dataset y entorno de ejecución.
             mlflow.set_tags(
                 {
                     "stage": "train",
                     "git_commit": _safe_git_commit(),
-                    "dataset_fingerprint": _dataset_fingerprint(),
+                    "dataset_fingerprint": dataset_fp,
                     "run_utc": datetime.now(timezone.utc).isoformat(),
                 }
             )
+            _log_dataset_to_mlflow(dataset_fp)
             _log_params_mlflow(cfg, cfg_train, args.env)
 
         history = entrenar(

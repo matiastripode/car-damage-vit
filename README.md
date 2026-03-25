@@ -164,7 +164,7 @@ python scripts/descargar_dataset.py
 ### 4. Entrenar
 
 ```bash
-python scripts/entrenar.py --config configs/model/deit_tiny.yaml --env dev
+python scripts/entrenar.py --config model/deit_tiny.yaml --env dev
 ```
 
 ### 5. Entrenar con tracking en MLflow
@@ -179,21 +179,47 @@ Entrenamiento con logging de métricas por epoch, params, checkpoint e historial
 
 ```bash
 python scripts/entrenar.py \
-  --config configs/model/mobilevit_small.yaml \
+  --config model/mobilevit_small.yaml \
   --env dev \
   --mlflow-uri http://localhost:6000 \
   --mlflow-experiment car-damage-vit-train
 ```
 
+Además, al iniciar el run de entrenamiento se registra el dataset en el campo **Dataset** de MLflow y se suben como artifacts los contenidos de `data/raw/{train,validation,test}` y `data/raw/annotations`.
+
+Si `nvidia-ml-py` está instalado y hay GPU NVIDIA disponible, MLflow también registra métricas de GPU (`system/gpu_*`) además de CPU/memoria/disco.
+
 Opcional: registrar el modelo en Model Registry de MLflow:
 
 ```bash
 python scripts/entrenar.py \
-  --config configs/model/mobilevit_small.yaml \
+  --config model/mobilevit_small.yaml \
   --env dev \
   --mlflow-uri http://localhost:6000 \
   --mlflow-experiment car-damage-vit-train \
   --mlflow-register-name car-damage-mobilevit
+```
+
+Para que la API cargue desde Registry por alias (configurada con `MLFLOW_MODEL_ALIAS=production`), asigná el alias a la última versión registrada:
+
+```bash
+python -c "from mlflow.tracking import MlflowClient; c=MlflowClient('http://localhost:6000'); name='car-damage-mobilevit'; v=max(c.search_model_versions(f\"name='{name}'\"), key=lambda m:int(m.version)); c.set_registered_model_alias(name, 'production', v.version); print(f'Alias production -> v{v.version}')"
+```
+
+### 5.1 Pipeline completo recomendado (preparación + train + eval)
+
+Comando de referencia para correr el flujo end-to-end con registro en MLflow y Model Registry:
+
+```bash
+python scripts/pipeline_entrenar_evaluar.py --config model/mobilevit_small.yaml --env dev --mlflow-uri http://localhost:6000 --mlflow-train-experiment car-damage-vit-train --mlflow-eval-experiment car-damage-vit-eval --mlflow-register-name car-damage-mobilevit
+```
+
+### 5.2 Comando recomendado para generar run + Dataset + registro de modelo
+
+Este comando crea un run de entrenamiento en MLflow, guarda el Dataset en el campo **Dataset**, sube artifacts de `data/raw` y registra el modelo en Model Registry:
+
+```bash
+python scripts/entrenar.py --config model/mobilevit_small.yaml --env dev --mlflow-uri http://localhost:6000 --mlflow-experiment car-damage-vit-train --mlflow-register-name car-damage-mobilevit
 ```
 
 ### 6. Evaluar checkpoint y loguear test en MLflow
@@ -201,7 +227,7 @@ python scripts/entrenar.py \
 ```bash
 python scripts/evaluar.py \
   --checkpoint checkpoints/mobilevit_small/best_model.pt \
-  --config configs/model/mobilevit_small.yaml \
+  --config model/mobilevit_small.yaml \
   --env dev \
   --mlflow-uri http://localhost:6000 \
   --mlflow-experiment car-damage-vit-eval
@@ -212,7 +238,7 @@ Para vincular el run de evaluación con uno de entrenamiento:
 ```bash
 python scripts/evaluar.py \
   --checkpoint checkpoints/mobilevit_small/best_model.pt \
-  --config configs/model/mobilevit_small.yaml \
+  --config model/mobilevit_small.yaml \
   --env dev \
   --mlflow-uri http://localhost:6000 \
   --mlflow-experiment car-damage-vit-eval \
@@ -284,6 +310,32 @@ curl -X POST https://abc123.ngrok-free.app/predecir \
 ---
 
 ## Docker
+
+### Stack completo con Docker Compose (recomendado)
+
+Construir imágenes del stack:
+
+```bash
+docker compose build
+```
+
+Levantar servicios:
+
+```bash
+docker compose up -d
+```
+
+Servicios principales:
+
+- Web UI (Streamlit): `https://localhost/`
+- API (via Traefik): `https://localhost/api/`
+- MLflow UI: `http://localhost:6000/mlflow`
+
+La UI web muestra el estado del modelo activo de la API y tiene el botón **Cargar ultima desde MLflow** (endpoint `POST /modelo/recargar`).
+
+Si la carga desde Model Registry falla por cualquier motivo, la API mantiene fallback automático al checkpoint local `checkpoints/mobilevit_small/best_model.pt`, y la UI lo informa en pantalla.
+
+Los datos de tracking y artifacts de MLflow persisten en el volumen `mlruns_data`.
 
 La API puede levantarse como contenedor sin necesidad de instalar el entorno conda.
 Usa `requirements-prod.txt` (solo deps de inferencia) en lugar del `requirements.txt` completo.

@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 import os
 from pathlib import Path
+from threading import RLock
+from datetime import datetime, timezone
 
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -20,6 +22,7 @@ BASE_MODEL_NAME = os.getenv("BASE_MODEL_NAME", "apple/mobilevit-small")
 NUM_CLASSES = int(os.getenv("NUM_CLASSES", "7"))
 
 _state = {}
+_model_lock = RLock()
 
 
 def _resolver_checkpoint() -> Path:
@@ -47,7 +50,7 @@ def _resolver_checkpoint() -> Path:
     raise FileNotFoundError(f"No se encontró checkpoint en: {ckpt_dir}")
 
 
-def _cargar_modelo_desde_registry():
+def _cargar_modelo_desde_registry(force_latest: bool = False):
     """
     Intenta cargar modelo desde MLflow Model Registry.
     Prioridad:
@@ -73,7 +76,7 @@ def _cargar_modelo_desde_registry():
         mlflow.set_tracking_uri(tracking_uri)
         client = MlflowClient(tracking_uri=tracking_uri)
 
-        if model_alias:
+        if model_alias and not force_latest:
             uri = f"models:/{model_name}@{model_alias}"
             model = mlflow.pytorch.load_model(uri)
             mv = client.get_model_version_by_alias(model_name, model_alias)
@@ -88,6 +91,18 @@ def _cargar_modelo_desde_registry():
         versions = list(client.search_model_versions(f"name='{model_name}'"))
         if not versions:
             raise RuntimeError(f"No hay versiones para el modelo registrado '{model_name}'")
+
+        if force_latest:
+            best = max(versions, key=lambda v: int(v.version))
+            uri = f"models:/{model_name}/{best.version}"
+            model = mlflow.pytorch.load_model(uri)
+            return model, {
+                "source": "mlflow_registry",
+                "model_uri": uri,
+                "model_name": model_name,
+                "model_version": str(best.version),
+                "model_stage": (best.current_stage or "").lower(),
+            }
 
         def _rank(v):
             stage = (v.current_stage or "").lower()
@@ -109,31 +124,54 @@ def _cargar_modelo_desde_registry():
         return None, None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Siempre cargamos el procesador desde Hugging Face para preprocesamiento.
-    modelo_base, procesador = cargar_modelo(BASE_MODEL_NAME, num_clases=NUM_CLASSES)
-    modelo_registry, meta_registry = _cargar_modelo_desde_registry()
+def _cargar_modelo_desde_checkpoint_local(modelo_base):
+    checkpoint = _resolver_checkpoint()
+    ckpt = torch.load(checkpoint, map_location="cpu")
+    modelo_base.load_state_dict(ckpt["model_state_dict"])
+    return modelo_base, {
+        "source": "local_checkpoint",
+        "checkpoint": str(checkpoint),
+    }
 
-    if modelo_registry is not None:
-        modelo = modelo_registry
-        _state["model_source"] = meta_registry["source"]
-        _state["model_uri"] = meta_registry["model_uri"]
-        _state["model_name"] = meta_registry["model_name"]
-        _state["model_version"] = meta_registry["model_version"]
-        _state["model_stage"] = meta_registry["model_stage"]
-    else:
-        checkpoint = _resolver_checkpoint()
-        ckpt = torch.load(checkpoint, map_location="cpu")
-        modelo_base.load_state_dict(ckpt["model_state_dict"])
-        modelo = modelo_base
-        _state["model_source"] = "local_checkpoint"
-        _state["checkpoint"] = str(checkpoint)
 
+def _aplicar_modelo_en_estado(modelo, procesador, meta: dict):
     modelo.to(DEVICE).eval()
     _state["modelo"] = modelo
     _state["procesador"] = procesador
     _state["device"] = DEVICE
+    _state["model_source"] = meta.get("source")
+    _state["model_uri"] = meta.get("model_uri")
+    _state["model_name"] = meta.get("model_name")
+    _state["model_version"] = meta.get("model_version")
+    _state["model_stage"] = meta.get("model_stage")
+    _state["checkpoint"] = meta.get("checkpoint")
+    _state["loaded_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _recargar_modelo(prefer_latest_mlflow: bool) -> dict:
+    modelo_base, procesador = cargar_modelo(BASE_MODEL_NAME, num_clases=NUM_CLASSES)
+    modelo, meta = _cargar_modelo_desde_registry(force_latest=prefer_latest_mlflow)
+
+    if modelo is None:
+        modelo, meta = _cargar_modelo_desde_checkpoint_local(modelo_base)
+
+    _aplicar_modelo_en_estado(modelo, procesador, meta)
+    return {
+        "ok": True,
+        "model_source": _state.get("model_source"),
+        "model_uri": _state.get("model_uri"),
+        "model_name": _state.get("model_name"),
+        "model_version": _state.get("model_version"),
+        "model_stage": _state.get("model_stage"),
+        "checkpoint": _state.get("checkpoint"),
+        "loaded_at": _state.get("loaded_at"),
+    }
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    with _model_lock:
+        _recargar_modelo(prefer_latest_mlflow=False)
     yield
     _state.clear()
 
@@ -160,7 +198,21 @@ def raiz():
         "model_version": _state.get("model_version"),
         "model_stage": _state.get("model_stage"),
         "checkpoint": _state.get("checkpoint"),
+        "loaded_at": _state.get("loaded_at"),
     }
+
+
+@app.post("/modelo/recargar")
+def recargar_modelo():
+    """
+    Intenta recargar en caliente la última versión del modelo en MLflow Registry.
+    Si falla, mantiene fallback automático a checkpoint local.
+    """
+    try:
+        with _model_lock:
+            return _recargar_modelo(prefer_latest_mlflow=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo recargar modelo: {e}")
 
 
 @app.post("/predecir")
@@ -169,10 +221,15 @@ async def predecir(archivo: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Se requiere una imagen")
     contenido = await archivo.read()
     imagen = Image.open(BytesIO(contenido)).convert("RGB")
+    with _model_lock:
+        modelo = _state["modelo"]
+        procesador = _state["procesador"]
+        device = _state["device"]
+
     resultado = predecir_imagen(
         imagen,
-        _state["modelo"],
-        _state["procesador"],
-        _state["device"],
+        modelo,
+        procesador,
+        device,
     )
     return resultado
