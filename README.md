@@ -73,7 +73,7 @@ graph TB
 
     SVC -->|"HTTPS POST\n/predecir"| NG
     NG -->|"HTTPS → Traefik (SSL offload)"| TRF
-    API -->|"JSON"| NG
+    TRF -->|"HTTPS response"| NG
     NG -->|"HTTPS"| SVC
 
     WEB -->|"HTTP interno"| TRF
@@ -125,29 +125,34 @@ sequenceDiagram
 sequenceDiagram
     actor Usuario
     participant Web as Streamlit UI<br/>(clients/web/app.py)
-    participant Traefik as Traefik<br/>(SSL + routing)
+    participant Traefik as Traefik<br/>(SSL offload + routing)
     participant API as FastAPI<br/>(app/main.py)
     participant INF as predecir_imagen()
     participant Modelo as MobileViT-small<br/>(registry o fallback)
     participant MLflow as MLflow Registry
 
+    Note over Traefik,API: SSL termina en Traefik; hacia adentro del stack todo viaja por HTTP interno
+
     Usuario->>Web: Abrir https://localhost/
     Web->>Traefik: HTTPS /
     Traefik->>API: HTTP /
-    API-->>Web: Estado del modelo activo
+    API-->>Traefik: HTTP 200 estado del modelo
+    Traefik-->>Web: HTTPS 200 estado del modelo
     Web-->>Usuario: Mostrar model_source / version / checkpoint
 
     opt Recargar modelo desde MLflow
         Usuario->>Web: Click "Cargar ultima desde MLflow"
         Web->>Traefik: HTTPS /api/modelo/recargar
         Traefik->>API: HTTP /modelo/recargar
-        API->>MLflow: Resolver versión registrada
+        API->>MLflow: HTTP interno resolver versión registrada
         alt Carga registry OK
-            MLflow-->>API: Artefacto de modelo
-            API-->>Web: {model_source: mlflow_registry, version}
+            MLflow-->>API: HTTP interno artefacto de modelo
+            API-->>Traefik: HTTP 200 {model_source: mlflow_registry, version}
+            Traefik-->>Web: HTTPS 200 {model_source: mlflow_registry, version}
             Web-->>Usuario: Mostrar éxito de recarga
         else Falla registry
-            API-->>Web: {model_source: local_checkpoint}
+            API-->>Traefik: HTTP 200 {model_source: local_checkpoint}
+            Traefik-->>Web: HTTPS 200 {model_source: local_checkpoint}
             Web-->>Usuario: Informar fallback local
         end
     end
@@ -160,7 +165,8 @@ sequenceDiagram
     INF->>Modelo: forward(pixel_values)
     Modelo-->>INF: logits
     INF-->>API: {clase, confianza, top3}
-    API-->>Web: JSON 200
+    API-->>Traefik: HTTP 200 JSON
+    Traefik-->>Web: HTTPS 200 JSON
     Web-->>Usuario: Mostrar predicción + top3 + confianza
 ```
 
@@ -250,7 +256,7 @@ docker compose up -d
 Consultar servicios principales:
 
 - Web UI (Streamlit): `https://localhost/`
-- API (via Traefik): `https://localhost/api/`
+- API (vía Traefik): `https://localhost/api/`
 - MLflow UI: `https://localhost/mlflow`
 
 ### 4. Ejecutar pipeline end-to-end (train + eval)
@@ -375,16 +381,14 @@ docker compose up -d
 Consultar servicios principales:
 
 - Web UI (Streamlit): `https://localhost/`
-- API (via Traefik): `https://localhost/api/`
-- MLflow UI: `http://localhost:6000/mlflow`
+- API (vía Traefik): `https://localhost/api/`
+- MLflow UI (vía Traefik): `https://localhost/mlflow`
 
 Mostrar en la UI web el estado del modelo activo de la API y ofrecer el botón **Cargar ultima desde MLflow** (endpoint `POST /modelo/recargar`).
 
 Si la carga desde Model Registry falla por cualquier motivo, mantener fallback automático en la API al checkpoint local `checkpoints/mobilevit_small/best_model.pt` e informar ese estado en la UI.
 
 Persistir los datos de tracking y artifacts de MLflow en el volumen `mlruns_data`.
-
-
 
 
 ## Dependencias
