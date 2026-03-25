@@ -131,7 +131,10 @@ sequenceDiagram
     participant Modelo as MobileViT-small<br/>(registry o fallback)
     participant MLflow as MLflow Registry
 
-    Note over Traefik,API: SSL termina en Traefik; hacia adentro del stack todo viaja por HTTP interno
+    Note over Traefik,API
+        SSL termina en Traefik
+        Hacia adentro del stack todo viaja por HTTP interno
+    end note
 
     Usuario->>Web: Abrir https://localhost/
     Web->>Traefik: HTTPS /
