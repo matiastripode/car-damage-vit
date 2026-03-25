@@ -48,9 +48,9 @@ graph TB
         MLF --- NET
         TRF --- NET
 
-        TRF -->|"/"| WEB
-        TRF -->|"/api"| API
-        TRF -->|"/mlflow"| MLF
+        TRF -->|"HTTP /"| WEB
+        TRF -->|"HTTP /api"| API
+        TRF -->|"HTTP /mlflow"| MLF
 
         API -->|"PIL Image"| INF
         INF -->|"tensor [1,3,224,224]"| MDL
@@ -72,13 +72,13 @@ graph TB
     EXT["Internet / clientes externos"]
 
     SVC -->|"HTTPS POST\n/predecir"| NG
-    NG -->|"HTTP → localhost (traefik)"| TRF
+    NG -->|"HTTPS → Traefik (SSL offload)"| TRF
     API -->|"JSON"| NG
     NG -->|"HTTPS"| SVC
 
-    WEB -->|"tráfico saliente SSL"| TRF
-    API -->|"tráfico saliente SSL"| TRF
-    MLF -->|"tráfico saliente SSL"| TRF
+    WEB -->|"HTTP interno"| TRF
+    API -->|"HTTP interno"| TRF
+    MLF -->|"HTTP interno"| TRF
     TRF -->|"HTTPS"| EXT
 ```
 
@@ -132,13 +132,15 @@ sequenceDiagram
     participant MLflow as MLflow Registry
 
     Usuario->>Web: Abrir https://localhost/
-    Web->>API: GET /
+    Web->>Traefik: HTTPS /
+    Traefik->>API: HTTP /
     API-->>Web: Estado del modelo activo
     Web-->>Usuario: Mostrar model_source / version / checkpoint
 
     opt Recargar modelo desde MLflow
         Usuario->>Web: Click "Cargar ultima desde MLflow"
-        Web->>API: POST /modelo/recargar
+        Web->>Traefik: HTTPS /api/modelo/recargar
+        Traefik->>API: HTTP /modelo/recargar
         API->>MLflow: Resolver versión registrada
         alt Carga registry OK
             MLflow-->>API: Artefacto de modelo
@@ -152,7 +154,8 @@ sequenceDiagram
 
     Usuario->>Web: Subir imagen y seleccionar ROI 224x224
     Usuario->>Web: Click "Predict ROI"
-    Web->>API: POST /predecir (multipart image)
+    Web->>Traefik: HTTPS /api/predecir (multipart image)
+    Traefik->>API: HTTP /predecir
     API->>INF: predecir_imagen(imagen, modelo, procesador, device)
     INF->>Modelo: forward(pixel_values)
     Modelo-->>INF: logits
