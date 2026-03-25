@@ -178,27 +178,18 @@ docker compose up -d mlflow
 Entrenamiento con logging de métricas por epoch, params, checkpoint e historial:
 
 ```bash
-python scripts/entrenar.py \
-  --config model/mobilevit_small.yaml \
+ python scripts/pipeline_entrenar_evaluar.py \
+  --config configs/model/mobilevit_small.yaml \
   --env dev \
   --mlflow-uri http://localhost:6000 \
-  --mlflow-experiment car-damage-vit-train
+  --mlflow-train-experiment car-damage-vit-train \
+  --mlflow-eval-experiment car-damage-vit-eval \
+  --mlflow-register-name car-damage-mobilevitc
 ```
 
 Además, al iniciar el run de entrenamiento se registra el dataset en el campo **Dataset** de MLflow y se suben como artifacts los contenidos de `data/raw/{train,validation,test}` y `data/raw/annotations`.
 
-Si `nvidia-ml-py` está instalado y hay GPU NVIDIA disponible, MLflow también registra métricas de GPU (`system/gpu_*`) además de CPU/memoria/disco.
-
-Opcional: registrar el modelo en Model Registry de MLflow:
-
-```bash
-python scripts/entrenar.py \
-  --config model/mobilevit_small.yaml \
-  --env dev \
-  --mlflow-uri http://localhost:6000 \
-  --mlflow-experiment car-damage-vit-train \
-  --mlflow-register-name car-damage-mobilevit
-```
+Si `nvidia-ml-py` está instalado y hay GPU NVIDIA disponible, MLflow también registra métricas de GPU (`system/gpu_*`) además de CPU/memoria/disco y registra el modelo en Model Registry de MLflow:
 
 Para que la API cargue desde Registry por alias (configurada con `MLFLOW_MODEL_ALIAS=production`), asigná el alias a la última versión registrada:
 
