@@ -16,6 +16,57 @@ st.caption("Upload an image, select a 224x224 ROI, and send it to FastAPI /prede
 
 api_base_url = st.text_input("FastAPI base URL", value=DEFAULT_API_URL).rstrip("/")
 endpoint = f"{api_base_url}/predecir"
+status_endpoint = f"{api_base_url}/"
+reload_endpoint = f"{api_base_url}/modelo/recargar"
+
+st.subheader("Model status")
+col_status, col_reload = st.columns([3, 1])
+
+with col_status:
+    try:
+        status_resp = requests.get(status_endpoint, timeout=10)
+        if status_resp.ok:
+            status = status_resp.json()
+            st.write(f"**Modelo base API:** {status.get('modelo', 'N/A')}")
+            st.write(f"**Origen cargado:** {status.get('model_source', 'N/A')}")
+            if status.get("model_name"):
+                st.write(f"**Model Registry:** {status.get('model_name')} v{status.get('model_version', 'N/A')} ({status.get('model_stage', 'none')})")
+            if status.get("model_uri"):
+                st.write(f"**Model URI:** {status.get('model_uri')}")
+            if status.get("checkpoint"):
+                st.write(f"**Checkpoint local:** {status.get('checkpoint')}")
+            if status.get("loaded_at"):
+                st.write(f"**Loaded at (UTC):** {status.get('loaded_at')}")
+        else:
+            st.warning(f"No se pudo leer estado de API ({status_resp.status_code}).")
+    except requests.RequestException as exc:
+        st.warning(f"No se pudo conectar para estado de modelo: {exc}")
+
+with col_reload:
+    if st.button("Cargar ultima desde MLflow", type="secondary"):
+        try:
+            reload_resp = requests.post(reload_endpoint, timeout=60)
+        except requests.RequestException as exc:
+            st.error(f"No se pudo recargar modelo: {exc}")
+        else:
+            if reload_resp.ok:
+                data = reload_resp.json()
+                if data.get("model_source") == "mlflow_registry":
+                    st.success(
+                        f"Modelo recargado desde MLflow: {data.get('model_name')} v{data.get('model_version', 'N/A')}"
+                    )
+                else:
+                    st.warning(
+                        "No se pudo cargar desde MLflow. Se aplico fallback a checkpoint local."
+                    )
+            else:
+                detail = reload_resp.text
+                try:
+                    detail_json = reload_resp.json()
+                    detail = detail_json.get("detail", detail)
+                except Exception:
+                    pass
+                st.error(f"Error recargando modelo ({reload_resp.status_code}): {detail}")
 
 archivo = st.file_uploader("Upload image", type=["jpg", "jpeg", "png", "webp"])
 

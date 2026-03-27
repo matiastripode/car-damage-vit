@@ -5,7 +5,7 @@ import torch
 from sklearn.metrics import accuracy_score, f1_score
 
 
-def entrenar(modelo, train_loader, val_loader, config):
+def entrenar(modelo, train_loader, val_loader, config, epoch_callback=None):
     """
     Loop principal de entrenamiento con validación por epoch.
 
@@ -88,6 +88,8 @@ def entrenar(modelo, train_loader, val_loader, config):
             "val_f1":     f1,
             "val_acc":    acc,
         })
+        if epoch_callback is not None:
+            epoch_callback(history[-1])
 
         print(
             f"[{epoch:02d}] train_loss={train_loss:.4f} | "
