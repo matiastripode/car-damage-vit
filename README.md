@@ -251,9 +251,12 @@ docker compose up -d
 
 Consultar servicios principales:
 
-- Web UI (Streamlit): `https://localhost/`
+- Web UI (Streamlit): `https://localhost/ui`
 - API (vía Traefik): `https://localhost/api/`
 - MLflow UI: `https://localhost/mlflow`
+- Traefik Dashboard: `https://localhost/dashboard/`
+- MinIO Console (directo, sin Traefik): `http://localhost:9001`
+- MinIO S3 API (directo, sin Traefik): `http://localhost:9000`
 
 ### 4. Ejecutar pipeline end-to-end (train + eval)
 
@@ -377,9 +380,12 @@ docker compose up -d
 
 Consultar servicios principales:
 
-- Web UI (Streamlit): `https://localhost/`
+- Web UI (Streamlit): `https://localhost/ui`
 - API (vía Traefik): `https://localhost/api/`
 - MLflow UI (vía Traefik): `https://localhost/mlflow`
+- Traefik Dashboard: `https://localhost/dashboard/`
+- MinIO Console (directo, sin Traefik): `http://localhost:9001`
+- MinIO S3 API (directo, sin Traefik): `http://localhost:9000`
 
 Mostrar en la UI web el estado del modelo activo de la API y ofrecer el botón **Cargar ultima desde MLflow** (endpoint `POST /modelo/recargar`).
 

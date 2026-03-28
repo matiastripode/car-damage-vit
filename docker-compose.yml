@@ -4,6 +4,8 @@ services:
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      - --api.dashboard=true
+      - --api.insecure=false
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
@@ -15,6 +17,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - edge
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik-dashboard.rule=Host(`localhost`) && (PathPrefix(`/dashboard`) || (PathPrefix(`/api`) && HeaderRegexp(`Referer`, `.*/dashboard/.*`)))
+      - traefik.http.routers.traefik-dashboard.entrypoints=websecure
+      - traefik.http.routers.traefik-dashboard.tls=true
+      - traefik.http.routers.traefik-dashboard.priority=200
+      - traefik.http.routers.traefik-dashboard.service=api@internal
+      #- traefik.http.routers.traefik-dashboard.middlewares=traefik-auth
+      #- traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}
 
   api:
     build:
@@ -22,12 +33,19 @@ services:
       dockerfile: Dockerfile
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:6000
-      - MLFLOW_MODEL_NAME=car-damage-mobilevit
+      - MLFLOW_MODEL_NAME=car-damage-mobilevitc
       - MLFLOW_MODEL_ALIAS=production
       - BASE_MODEL_NAME=apple/mobilevit-small
       - NUM_CLASSES=7
+      # Persistencia de ROI + respuesta de inferencia en MinIO (bucket RLHF).
+      - MINIO_RLHF_ENABLED=true
+      - MINIO_ENDPOINT_URL=http://minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      - MINIO_RLHF_BUCKET=rlhf
     depends_on:
       - mlflow
+      - minio
     networks:
       - edge
     labels:
@@ -52,10 +70,12 @@ services:
       - edge
     labels:
       - traefik.enable=true
-      - traefik.http.routers.web.rule=Host(`localhost`) && PathPrefix(`/`)
+      - traefik.http.routers.web.rule=Host(`localhost`) && PathPrefix(`/ui`)
       - traefik.http.routers.web.entrypoints=websecure
       - traefik.http.routers.web.tls=true
       - traefik.http.routers.web.priority=1
+      - traefik.http.routers.web.middlewares=web-strip
+      - traefik.http.middlewares.web-strip.stripprefix.prefixes=/ui
       - traefik.http.services.web.loadbalancer.server.port=8501
 
   mlflow:
@@ -86,9 +106,24 @@ services:
       - traefik.http.routers.mlflow.priority=90
       - traefik.http.services.mlflow.loadbalancer.server.port=6000
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_BROWSER_REDIRECT_URL=http://localhost:9001
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9001:9001"
+    networks:
+      - edge
+
 networks:
   edge:
     driver: bridge
 
 volumes:
   mlruns_data:
+  minio_data:

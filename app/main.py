@@ -1,10 +1,13 @@
 import sys
 from contextlib import asynccontextmanager
 from io import BytesIO
+import json
 import os
 from pathlib import Path
+import re
 from threading import RLock
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -23,6 +26,7 @@ NUM_CLASSES = int(os.getenv("NUM_CLASSES", "7"))
 
 _state = {}
 _model_lock = RLock()
+_minio_lock = RLock()
 
 
 def _resolver_checkpoint() -> Path:
@@ -168,6 +172,119 @@ def _recargar_modelo(prefer_latest_mlflow: bool) -> dict:
     }
 
 
+def _minio_habilitado() -> bool:
+    """
+    Permite desactivar persistencia de feedback por env si hiciera falta.
+    """
+    return os.getenv("MINIO_RLHF_ENABLED", "true").lower() in {"1", "true", "yes"}
+
+
+def _obtener_cliente_minio():
+    """
+    Inicializa cliente S3 (MinIO) en modo lazy y lo cachea en memoria.
+    """
+    if _state.get("minio_client") is not None:
+        return _state["minio_client"]
+
+    try:
+        import boto3
+    except Exception as e:
+        print(f"[minio] boto3 no disponible: {e}. Se omite persistencia RLHF.")
+        return None
+
+    endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://minio:9000")
+    access_key = os.getenv("MINIO_ACCESS_KEY", "")
+    secret_key = os.getenv("MINIO_SECRET_KEY", "")
+    region = os.getenv("MINIO_REGION", "us-east-1")
+
+    if not access_key or not secret_key:
+        print("[minio] Faltan credenciales MINIO_ACCESS_KEY/MINIO_SECRET_KEY. Se omite persistencia RLHF.")
+        return None
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region,
+    )
+    _state["minio_client"] = client
+    return client
+
+
+def _asegurar_bucket_rlhf(client, bucket_name: str) -> None:
+    """
+    Crea bucket RLHF si no existe. Se ejecuta una sola vez por proceso.
+    """
+    checked_key = f"minio_bucket_checked:{bucket_name}"
+    if _state.get(checked_key):
+        return
+
+    with _minio_lock:
+        if _state.get(checked_key):
+            return
+        try:
+            client.head_bucket(Bucket=bucket_name)
+        except Exception:
+            # Si no existe (o no tenemos permiso para head), intentamos crear.
+            client.create_bucket(Bucket=bucket_name)
+        _state[checked_key] = True
+
+
+def _guardar_feedback_rlhf(imagen_roi_224: Image.Image, resultado: dict) -> dict | None:
+    """
+    Guarda ROI 224x224 y respuesta del modelo en bucket MinIO `RLHF`.
+    Estructura de objetos:
+      rlhf/YYYY/MM/DD/<timestamp>_<id>.jpg
+      rlhf/YYYY/MM/DD/<timestamp>_<id>.json
+    """
+    if not _minio_habilitado():
+        return None
+
+    client = _obtener_cliente_minio()
+    if client is None:
+        return None
+
+    bucket_name = os.getenv("MINIO_RLHF_BUCKET", "rlhf").strip().lower()
+    # S3/MinIO exige nombres en minúscula, 3-63 chars, con [a-z0-9.-].
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket_name):
+        print(f"[minio] Bucket inválido '{bucket_name}'. Se usa fallback 'rlhf'.")
+        bucket_name = "rlhf"
+    _asegurar_bucket_rlhf(client, bucket_name)
+
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y%m%dT%H%M%S%fZ")
+    sample_id = uuid4().hex[:12]
+    base_key = f"rlhf/{now:%Y/%m/%d}/{ts}_{sample_id}"
+    roi_key = f"{base_key}.jpg"
+    pred_key = f"{base_key}.json"
+
+    roi_buf = BytesIO()
+    imagen_roi_224.save(roi_buf, format="JPEG", quality=95)
+    roi_buf.seek(0)
+
+    payload = {
+        "timestamp_utc": now.isoformat(),
+        "roi_key": roi_key,
+        "prediction": resultado,
+    }
+    pred_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    client.put_object(
+        Bucket=bucket_name,
+        Key=roi_key,
+        Body=roi_buf.getvalue(),
+        ContentType="image/jpeg",
+    )
+    client.put_object(
+        Bucket=bucket_name,
+        Key=pred_key,
+        Body=pred_bytes,
+        ContentType="application/json",
+    )
+    return {"bucket": bucket_name, "roi_key": roi_key, "prediction_key": pred_key}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     with _model_lock:
@@ -232,4 +349,13 @@ async def predecir(archivo: UploadFile = File(...)):
         procesador,
         device,
     )
+    # Guardamos la ROI en tamaño canónico para datasets de feedback humano (RLHF).
+    roi_224 = imagen.resize((224, 224), Image.BILINEAR)
+    try:
+        minio_info = _guardar_feedback_rlhf(roi_224, resultado)
+        if minio_info:
+            resultado["rlhf_storage"] = minio_info
+    except Exception as e:
+        # Nunca frenamos inferencia por fallas de almacenamiento de feedback.
+        print(f"[minio] No se pudo guardar feedback RLHF: {e}")
     return resultado

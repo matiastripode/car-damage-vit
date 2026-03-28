@@ -100,6 +100,8 @@ def _ensure_mlflow_for_local_scripts(args) -> None:
 
 
 if __name__ == "__main__":
+    # 1) Entrada del pipeline: parseamos argumentos de ejecución.
+    #    Este script funciona tanto en modo local simple como con tracking en MLflow.
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Ruta al YAML de modelo")
     parser.add_argument("--env", default="dev", choices=["dev", "staging", "prod"])
@@ -109,10 +111,14 @@ if __name__ == "__main__":
     parser.add_argument("--mlflow-register-name", default=None)
     args = parser.parse_args()
 
+    # 2) Resolución de la config:
+    #    - si viene relativa, la resolvemos contra la raíz del repo;
+    #    - si viene absoluta, se usa tal cual.
     config_path = (ROOT / args.config).resolve() if not Path(args.config).is_absolute() else Path(args.config)
     cfg = _cargar_config(config_path)
 
-    # Paso 1: preparación de datos solo si hace falta.
+    # 3) Preparación de datos idempotente:
+    #    solo ejecuta scripts de preparación cuando detecta faltantes.
     if not _splits_listos():
         print("Splits de dataset faltantes. Ejecutando descarga y partición...")
         _run([sys.executable, "scripts/descargar_dataset.py"])
@@ -125,10 +131,14 @@ if __name__ == "__main__":
     else:
         print("Anotaciones: OK")
 
-    # Paso 1.1: validación temprana para evitar fallar tarde en train/eval.
+    # 4) Validación temprana del entorno:
+    #    si se pide MLflow, verificamos que el intérprete actual lo tenga instalado
+    #    antes de empezar a entrenar (evita perder tiempo y fallar al final).
     _ensure_mlflow_for_local_scripts(args)
 
-    # Paso 2: entrenamiento.
+    # 5) Entrenamiento:
+    #    armamos el comando base y, si corresponde, agregamos flags de MLflow
+    #    (tracking URI, experimento y nombre de registro).
     train_cmd = [
         sys.executable,
         "scripts/entrenar.py",
@@ -148,13 +158,17 @@ if __name__ == "__main__":
             train_cmd += ["--mlflow-register-name", args.mlflow_register_name]
     _run(train_cmd)
 
-    # Paso 3: evaluación sobre test.
+    # 6) Resolución y verificación del checkpoint de salida.
+    #    El pipeline asume que entrenar.py deja best_model.pt en la ruta esperada.
+    #    Si no aparece, cortamos para no evaluar con estado inconsistente.
     checkpoint = _checkpoint_esperado(cfg)
     if not checkpoint.exists():
         raise FileNotFoundError(
             f"No se encontró checkpoint esperado tras entrenar: {checkpoint}"
         )
 
+    # 7) Evaluación:
+    #    se ejecuta sobre split test usando el checkpoint final del paso de train.
     eval_cmd = [
         sys.executable,
         "scripts/evaluar.py",
@@ -174,4 +188,5 @@ if __name__ == "__main__":
         ]
     _run(eval_cmd)
 
+    # 8) Fin del pipeline.
     print("\nPipeline completado.")
