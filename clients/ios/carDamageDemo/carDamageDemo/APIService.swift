@@ -38,8 +38,6 @@ private final class LocalhostSelfSignedDelegate: NSObject, URLSessionDelegate {
 }
 
 class APIService {
-    // Cambiar por la URL de ngrok o IP local (ej. "http://192.168.1.42:8000")
-    // static let baseURL = "https://TU-URL-NGROK.ngrok-free.app"
     static let baseURL = "https://localhost/api"
     private static let parsedBaseURL = URL(string: baseURL)
 

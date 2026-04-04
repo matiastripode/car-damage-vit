@@ -1,0 +1,50 @@
+http:
+  routers:
+    api:
+      rule: "Host(`localhost`) && PathPrefix(`/api`)"
+      entryPoints: [websecure]
+      middlewares: [api-strip]
+      service: api
+      tls: {}
+
+    web:
+      rule: "Host(`localhost`) && PathPrefix(`/ui`)"
+      entryPoints: [websecure]
+      service: web
+      tls: {}
+
+    mlflow:
+      rule: "Host(`localhost`) && PathPrefix(`/mlflow`)"
+      entryPoints: [websecure]
+      service: mlflow
+      tls: {}
+
+    dashboard:
+      rule: "Host(`localhost`) && PathPrefix(`/dashboard`)"
+      entryPoints: [websecure]
+      service: api@internal
+      tls: {}
+
+  middlewares:
+    api-strip:
+      stripPrefix:
+        prefixes: [/api]
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: "http://api:8000"
+    web:
+      loadBalancer:
+        servers:
+          - url: "http://web:8501"
+    mlflow:
+      loadBalancer:
+        servers:
+          - url: "http://mlflow:6000"
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/cert.pem
+      keyFile:  /etc/traefik/certs/key.pem

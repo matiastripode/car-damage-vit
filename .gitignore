@@ -59,6 +59,9 @@ reports/figuras/*
 *.swp
 *.swo
 
+# Certificados TLS locales (generados por setup_dev.sh / mkcert)
+certs/*.pem
+
 # macOS
 .DS_Store
 
