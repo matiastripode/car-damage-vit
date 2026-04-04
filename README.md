@@ -15,15 +15,11 @@ graph TB
         SVC -->|"Prediccion (clase, confianza, top3)"| UI
     end
 
-    subgraph Tunnel["🌐 Túnel ngrok"]
-        NG["ngrok\nhttps://xxx.ngrok-free.app"]
-    end
-
     subgraph Backend["🐳 Docker Compose Stack"]
         NET{{"red interna\nbridge (edge)"}}
 
         subgraph C_TRF["contenedor traefik"]
-            TRF["reverse proxy\nSSL/TLS"]
+            TRF["reverse proxy\nSSL/TLS\nmkcert localhost"]
         end
 
         subgraph C_WEB["contenedor web"]
@@ -43,12 +39,18 @@ graph TB
             VOL[("mlruns_data\nartifacts + sqlite")]
         end
 
+        subgraph C_MNO["contenedor minio"]
+            MNO["MinIO S3\nobject storage"]
+            MNOV[("minio_data\nrlhf bucket")]
+        end
+
         WEB --- NET
         API --- NET
         MLF --- NET
         TRF --- NET
+        MNO --- NET
 
-        TRF -->|"HTTP /"| WEB
+        TRF -->|"HTTP /ui"| WEB
         TRF -->|"HTTP /api"| API
         TRF -->|"HTTP /mlflow"| MLF
 
@@ -59,8 +61,10 @@ graph TB
         INF -->|"JSON response"| API
 
         API <-->|"leer modelo registrado"| MLF
+        API -->|"ROI + predicción\nfeedback YOLO"| MNO
         TRN -->|"registrar modelo + métricas"| MLF
         MLF -->|"persistir"| VOL
+        MNO -->|"persistir"| MNOV
     end
 
     subgraph Training["🔬 Entrenamiento (offline)"]
@@ -69,17 +73,8 @@ graph TB
         DS --> PATCH --> TRN
     end
 
-    EXT["Internet / clientes externos"]
-
-    SVC -->|"HTTPS POST\n/predecir"| NG
-    NG -->|"HTTPS → Traefik (SSL offload)"| TRF
-    TRF -->|"HTTPS response"| NG
-    NG -->|"HTTPS"| SVC
-
-    WEB -->|"HTTP interno"| TRF
-    API -->|"HTTP interno"| TRF
-    MLF -->|"HTTP interno"| TRF
-    TRF -->|"HTTPS"| EXT
+    SVC -->|"HTTPS https://localhost/api"| TRF
+    TRF -->|"HTTPS response"| SVC
 ```
 
 ---
@@ -115,6 +110,35 @@ sequenceDiagram
     Svc-->>App: Prediccion(clase, confianza, top3)
     App->>App: prediccion = result\ncargando = false
     App->>Usuario: Muestra ResultadoView\n─ clase en mayúsculas\n─ barra de confianza\n─ top 3 con porcentajes
+```
+
+---
+
+## Flujo de corrección humana — demo iPhone
+
+```mermaid
+sequenceDiagram
+    actor Usuario
+    participant App as ContentView<br/>(SwiftUI)
+    participant Svc as APIService<br/>(Swift)
+    participant API as FastAPI<br/>POST /feedback
+    participant MinIO as MinIO<br/>(bucket rlhf)
+
+    Note over App: Modelo retornó predicción<br/>+ rlhf_storage.roi_key
+
+    Usuario->>App: Pulsa "¿Predicción incorrecta? Corregir"
+    App->>App: Muestra sheet con Picker<br/>de 7 clases
+    Usuario->>App: Selecciona clase correcta\n(ej. "fondo")
+    App->>App: Pulsa "Enviar"
+    App->>Svc: enviarFeedback(roiKey, claseCorrecta)
+    Svc->>API: POST /feedback\n{"roi_key": "...", "clase_correcta": "fondo"}
+    API->>API: Valida clase\nDeriva base_key desde roi_key
+    API->>MinIO: PUT <base_key>_feedback.json\n{clase_correcta, class_id, corrected_at}
+    API->>MinIO: PUT <base_key>.txt\n"6 0.5 0.5 1.0 1.0" (YOLO)
+    MinIO-->>API: 200 OK
+    API-->>Svc: {"feedback_key": ..., "yolo_key": ...}
+    Svc-->>App: success
+    App->>Usuario: Muestra "✓ Corrección enviada"
 ```
 
 ---
