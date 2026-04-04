@@ -12,6 +12,7 @@ from uuid import uuid4
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from PIL import Image
 
 ROOT = Path(__file__).parent.parent
@@ -23,6 +24,8 @@ from vit.models.factory import cargar_modelo
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 BASE_MODEL_NAME = os.getenv("BASE_MODEL_NAME", "apple/mobilevit-small")
 NUM_CLASSES = int(os.getenv("NUM_CLASSES", "7"))
+
+_CLASES_CON_FONDO = ["dent", "scratch", "crack", "glass_shatter", "tire_flat", "lamp_broken", "fondo"]
 
 _state = {}
 _model_lock = RLock()
@@ -285,6 +288,51 @@ def _guardar_feedback_rlhf(imagen_roi_224: Image.Image, resultado: dict) -> dict
     return {"bucket": bucket_name, "roi_key": roi_key, "prediction_key": pred_key}
 
 
+def _guardar_feedback_humano(roi_key: str, clase_correcta: str) -> dict:
+    """
+    Persiste la corrección humana en MinIO junto a la ROI ya guardada.
+    Crea dos objetos:
+      <base_key>_feedback.json  — metadatos de la corrección
+      <base_key>.txt            — anotación YOLO (class_id 0.5 0.5 1.0 1.0)
+    """
+    client = _obtener_cliente_minio()
+    if client is None:
+        raise RuntimeError("MinIO no disponible")
+
+    bucket_name = os.getenv("MINIO_RLHF_BUCKET", "rlhf").strip().lower()
+    class_id = _CLASES_CON_FONDO.index(clase_correcta)
+
+    # Deriva base_key desde roi_key quitando la extensión .jpg
+    base_key = roi_key.removesuffix(".jpg")
+    feedback_key = f"{base_key}_feedback.json"
+    yolo_key = f"{base_key}.txt"
+
+    now = datetime.now(timezone.utc)
+    feedback_payload = {
+        "roi_key": roi_key,
+        "clase_correcta": clase_correcta,
+        "class_id": class_id,
+        "corrected_at": now.isoformat(),
+    }
+    feedback_bytes = json.dumps(feedback_payload, ensure_ascii=False).encode("utf-8")
+    yolo_bytes = f"{class_id} 0.5 0.5 1.0 1.0\n".encode("utf-8")
+
+    client.put_object(
+        Bucket=bucket_name, Key=feedback_key,
+        Body=feedback_bytes, ContentType="application/json",
+    )
+    client.put_object(
+        Bucket=bucket_name, Key=yolo_key,
+        Body=yolo_bytes, ContentType="text/plain",
+    )
+    return {"feedback_key": feedback_key, "yolo_key": yolo_key}
+
+
+class FeedbackRequest(BaseModel):
+    roi_key: str
+    clase_correcta: str
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     with _model_lock:
@@ -359,3 +407,22 @@ async def predecir(archivo: UploadFile = File(...)):
         # Nunca frenamos inferencia por fallas de almacenamiento de feedback.
         print(f"[minio] No se pudo guardar feedback RLHF: {e}")
     return resultado
+
+
+@app.post("/feedback")
+def feedback(req: FeedbackRequest):
+    """
+    Recibe la corrección humana de una predicción previa.
+    Persiste en MinIO: _feedback.json con metadatos + .txt con anotación YOLO.
+    """
+    if req.clase_correcta not in _CLASES_CON_FONDO:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Clase inválida '{req.clase_correcta}'. Válidas: {_CLASES_CON_FONDO}",
+        )
+    if not req.roi_key.endswith(".jpg"):
+        raise HTTPException(status_code=422, detail="roi_key debe terminar en .jpg")
+    try:
+        return _guardar_feedback_humano(req.roi_key, req.clase_correcta)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo guardar feedback: {e}")

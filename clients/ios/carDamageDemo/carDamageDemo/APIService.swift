@@ -1,10 +1,26 @@
 import Foundation
 import UIKit
 
+struct RLHFStorage: Codable {
+    let bucket: String
+    let roiKey: String
+    let predictionKey: String
+    enum CodingKeys: String, CodingKey {
+        case bucket
+        case roiKey = "roi_key"
+        case predictionKey = "prediction_key"
+    }
+}
+
 struct Prediccion: Codable {
     let clase: String
     let confianza: Double
     let top3: [PrediccionItem]
+    let rlhfStorage: RLHFStorage?
+    enum CodingKeys: String, CodingKey {
+        case clase, confianza, top3
+        case rlhfStorage = "rlhf_storage"
+    }
 }
 
 struct PrediccionItem: Codable {
@@ -76,5 +92,19 @@ class APIService {
 
         let (data, _) = try await session.data(for: request)
         return try JSONDecoder().decode(Prediccion.self, from: data)
+    }
+
+    static func enviarFeedback(roiKey: String, claseCorrecta: String) async throws {
+        guard let url = URL(string: "\(baseURL)/feedback") else { throw URLError(.badURL) }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["roi_key": roiKey, "clase_correcta": claseCorrecta])
+
+        let (_, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
     }
 }
