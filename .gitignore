@@ -57,6 +57,8 @@ reports/metricas/*
 reports/figuras/*
 !reports/metricas/.gitkeep
 !reports/figuras/.gitkeep
+!reports/informe.tex
+!reports/informe.pdf
 
 # IDEs
 .vscode/
