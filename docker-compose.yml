@@ -25,7 +25,7 @@ services:
       dockerfile: Dockerfile
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:6000
-      - MLFLOW_MODEL_NAME=car-damage-mobilevitc
+      - MLFLOW_MODEL_NAME=car-damage-mobilevit
       - MLFLOW_MODEL_ALIAS=production
       - BASE_MODEL_NAME=apple/mobilevit-small
       - NUM_CLASSES=7
