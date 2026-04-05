@@ -1,4 +1,3 @@
 {
-  "database_uri": "mongodb://localhost:27017",
-  "database_validation": false
+  "database_uri": "mongodb://localhost:27017"
 }

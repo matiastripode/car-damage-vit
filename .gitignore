@@ -19,7 +19,11 @@ env/
 *.ipynb_checkpoints
 
 # Datos (demasiado pesados para el repo)
-data/raw/*
+# data/raw/*
+data/raw/annotations
+data/raw/test
+data/raw/train
+data/raw/validation
 data/interim/*
 data/processed/*
 !data/raw/.gitkeep
@@ -31,6 +35,7 @@ data/processed/*
 checkpoints/.cache
 checkpoints/history.json
 notebooks/checkpoints
+notebooks/outputs
 notebooks/runs
 !checkpoints/.gitkeep
 #*.pt
