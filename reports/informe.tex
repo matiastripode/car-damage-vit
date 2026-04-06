@@ -90,7 +90,7 @@
 \begin{abstract}
 Este informe documenta el desarrollo de un pipeline completo de clasificación de daños en
 vehículos utilizando Vision Transformers (ViT). Se evaluaron dos arquitecturas ligeras ---
-DeiT-tiny y MobileViT-small --- sobre el dataset CarDD, implementando una estrategia de
+MobileViT-small y DeiT-tiny--- sobre el dataset CarDD, implementando una estrategia de
 parches centrados en regiones de interés. El sistema resultante incluye una API REST,
 una interfaz web, una app iOS y un mecanismo de retroalimentación humana (RLHF) con
 persistencia en MinIO, todo orquestado mediante Docker Compose. MobileViT-small obtuvo
@@ -111,8 +111,8 @@ imagen, con el fin de acelerar los procesos de peritaje y estimación de reparac
 
 \subsection*{Objetivos específicos}
 \begin{itemize}
-  \item Implementar y comparar dos arquitecturas Vision Transformer ligeras:
-        \textbf{DeiT-tiny} y \textbf{MobileViT-small}, adecuadas para despliegue en
+  \item Implementar una arquitectura completa de Vision Transformer ligero:
+        \texttt{apple/MobileViT-small} y \texttt{facebook/deit-tiny-patch16-224}, adecuadas para despliegue en
         dispositivos de recursos limitados.
   \item Desarrollar una estrategia de extracción de parches centrados en bounding boxes
         (224$\times$224 px) que convierta la detección de objetos en un problema de
@@ -120,6 +120,10 @@ imagen, con el fin de acelerar los procesos de peritaje y estimación de reparac
   \item Construir una API REST de producción con soporte para retroalimentación humana
         (\textit{human-in-the-loop}) y persistencia de correcciones en MinIO.
   \item Proveer interfaces de usuario accesibles: aplicación móvil iOS y dashboard web.
+  \item Implementar un pipeline de entrenamiento reproducible con MLflow para tracking y
+        registro de modelos, facilitando la iteración y mejora continua.
+  \item Conexión segura HTTPs con Traefik como reverse proxy, garantizando la integridad y confidencialidad de los datos.
+  \item Evaluar una arquitectura mas compleja de segmentación de instancias (Mask2Former) con backbone SWIM \texttt{facebook/mask2former-swin-small-coco-instance} como posible mejora futura.
 \end{itemize}
 
 \subsection*{Dataset y Análisis Exploratorio}
@@ -266,6 +270,7 @@ resultando en \textbf{7 clases totales} para el clasificador.
 
 El flujo principal de una predicción sigue estos pasos:
 
+Para IOS:
 \begin{enumerate}
   \item El usuario captura o selecciona una imagen desde la app iOS.
   \item La imagen se envía vía HTTPS al endpoint \texttt{POST /predecir}.
@@ -276,6 +281,7 @@ El flujo principal de una predicción sigue estos pasos:
   \item Si RLHF está habilitado, la ROI y la predicción se persisten en MinIO
         (de forma asíncrona, sin bloquear la respuesta).
 \end{enumerate}
+Para Web UI, el proceso es similar, la diferencia radica en que el usuario sube una imagen a la interfaz y selecciona una región de interés para el análisis.
 
 % =============================================================
 \section{Implementación Técnica}
@@ -296,16 +302,16 @@ La estrategia central del proyecto convierte el problema de detección de objeto
 \end{itemize}
 
 \subsection{Modelos evaluados}
-
+Se realizaron pruebas preliminares para elegir con que modelo trabajar en el proyecto.
 \begin{table}[H]
   \centering
-  \begin{tabular}{lllll}
+  \begin{tabular}{llll}
     \toprule
-    \textbf{Modelo} & \textbf{HuggingFace ID} & \textbf{Parámetros} &
+    \textbf{Modelo HuggingFace ID} & \textbf{Parámetros} &
     \textbf{Learning rate} & \textbf{Épocas} \\
     \midrule
-    DeiT-tiny       & \texttt{facebook/deit-tiny-patch16-224} & $\sim$5,7M & 2$\times$10$^{-5}$ & 15 \\
-    MobileViT-small & \texttt{apple/mobilevit-small}          & $\sim$5,6M & 1$\times$10$^{-4}$ & 15 \\
+    \texttt{facebook/deit-tiny-patch16-224} & $\sim$5,7M & 2$\times$10$^{-5}$ & 15 \\
+    \texttt{apple/mobilevit-small}          & $\sim$5,6M & 1$\times$10$^{-4}$ & 15 \\
     \bottomrule
   \end{tabular}
   \caption{Configuración de los modelos evaluados. Ambos con batch size=32, weight decay=0.01,
@@ -313,7 +319,7 @@ La estrategia central del proyecto convierte el problema de detección de objeto
 \end{table}
 
 Ambos modelos se cargan desde HuggingFace con \texttt{AutoModelForImageClassification},
-reemplazando la cabeza de clasificación por una capa lineal de 7 salidas
+reemplazando la cabeza de clasificación por una capa lineal de 7 salidas \\
 (\texttt{src/vit/models/factory.py}):
 
 \noindent\begin{minipage}{\linewidth}
@@ -332,14 +338,77 @@ def cargar_modelo(nombre, num_clases, attn_implementation=None):
 
 \subsection{Pipeline de entrenamiento}
 
-El entrenamiento (\texttt{src/vit/train/trainer.py}) incluye:
+La orquestación end-to-end se realiza con
+\texttt{scripts/pipeline\_entrenar\_evaluar.py}. Este script coordina preparación de
+datos, entrenamiento y evaluación en una única ejecución reproducible.
+
+\textbf{Flujo operativo (8 etapas):}
+\begin{enumerate}
+  \item \textbf{Parseo de argumentos de entrada:} \texttt{--config} (requerido),
+        \texttt{--env} (\texttt{dev|staging|prod}) y flags opcionales de MLflow
+        (\texttt{--mlflow-uri}, \texttt{--mlflow-train-experiment},
+        \texttt{--mlflow-eval-experiment}, \texttt{--mlflow-register-name}).
+  \item \textbf{Resolución de configuración:} la ruta YAML se normaliza contra la raíz
+        del repositorio cuando se pasa como relativa; si es absoluta, se usa sin cambios.
+  \item \textbf{Preparación idempotente de datos:}
+        si faltan splits en \texttt{data/raw/\{train,validation,test\}} (con
+        \texttt{state.json} y \texttt{dataset\_info.json}), se ejecuta
+        \texttt{scripts/descargar\_dataset.py}; si faltan anotaciones COCO
+        (\texttt{train.json}, \texttt{validation.json}, \texttt{test.json}),
+        se ejecuta \texttt{scripts/exportar\_anotaciones.py}.
+  \item \textbf{Validación temprana de entorno MLflow:}
+        cuando se informa \texttt{--mlflow-uri}, se verifica que el intérprete local
+        tenga el módulo \texttt{mlflow} instalado antes de iniciar entrenamiento.
+  \item \textbf{Entrenamiento:}
+        se invoca \texttt{scripts/entrenar.py} propagando \texttt{config} y \texttt{env},
+        y opcionalmente parámetros de tracking/registro en MLflow.
+        En este paso, \texttt{src/vit/train/trainer.py} aporta
+        \textbf{early stopping}, \textbf{checkpointing} del mejor modelo y
+        \textbf{logging} de métricas/artefactos en MLflow.
+  \item \textbf{Resolución y verificación de checkpoint esperado:}
+        se exige la presencia de \texttt{best\_model.pt} en
+        \texttt{checkpoints/<modelo\_slug>/best\_model.pt}, o en el \texttt{output\_dir}
+        definido en la configuración si fue sobrescrito.
+  \item \textbf{Evaluación sobre test:}
+        se ejecuta \texttt{scripts/evaluar.py} con el checkpoint validado en el paso
+        anterior, reutilizando \texttt{config}/\texttt{env} y, si corresponde, logging
+        en experimento de evaluación de MLflow.
+  \item \textbf{Cierre exitoso:}
+        el pipeline finaliza reportando ``\texttt{Pipeline completado.}''.
+\end{enumerate}
+
+\textbf{Comportamiento ante fallos:}
 \begin{itemize}
-  \item \textbf{Early stopping} con paciencia configurable sobre val\_accuracy.
-  \item \textbf{Checkpointing} del mejor modelo en \texttt{checkpoints/<modelo>/best\_model.pt}.
-  \item \textbf{MLflow logging}: parámetros de configuración, métricas por época
-        (loss, accuracy, macro F1) y artefactos (modelo final).
-  \item Soporte de dispositivos: MPS (Apple Silicon), CUDA y CPU.
+  \item El pipeline corta la ejecución si falla cualquier subproceso invocado
+        (\texttt{subprocess.run(..., check=True)}).
+  \item Si tras entrenamiento no existe el checkpoint esperado, se aborta con
+        \texttt{FileNotFoundError} para evitar una evaluación inconsistente.
 \end{itemize}
+
+\textbf{Contrato entre etapas (train $\rightarrow$ eval):}
+\begin{itemize}
+  \item Artefacto obligatorio: \texttt{best\_model.pt}.
+  \item Ubicación por defecto:
+        \texttt{checkpoints/<modelo\_slug>/best\_model.pt}.
+  \item Ubicación alternativa: \texttt{output\_dir} del YAML de modelo.
+\end{itemize}
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=bash, caption={Uso del pipeline de entrenamiento/evaluación.}]
+# Ejecucion base
+python scripts/pipeline_entrenar_evaluar.py \
+  --config configs/model/mobilevit_small.yaml \
+  --env dev
+
+# Ejecucion con MLflow
+python scripts/pipeline_entrenar_evaluar.py \
+  --config configs/model/mobilevit_small.yaml \
+  --env dev \
+  --mlflow-uri http://localhost:6000 \
+  --mlflow-train-experiment car-damage-vit-train \
+  --mlflow-eval-experiment car-damage-vit-eval
+\end{lstlisting}
+\end{minipage}
 
 \subsection{API REST}
 
@@ -397,6 +466,7 @@ Cuando el usuario corrige una predicción errónea (desde la app iOS o la UI web
   \item Estos datos quedan persistidos en MinIO y disponibles para un eventual pipeline de re-entrenamiento (fuera del alcance del presente proyecto).
 \end{enumerate}
 
+\newpage
 % =============================================================
 \section{Evaluación: Métricas de Desempeño}
 % =============================================================
@@ -430,7 +500,7 @@ locales relevantes para daños de pequeño tamaño.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.95\textwidth]{model_train_graph.jpeg}
+  \includegraphics[width=1\textwidth]{model_train_graph.jpeg}
   \caption{Evolución de métricas durante el entrenamiento de MobileViT-small (15 épocas).
   El mejor checkpoint se alcanza en la época 12 con val\_accuracy=0,7624 y val\_F1=0,7451.}
 \end{figure}
@@ -443,7 +513,7 @@ converge sin sobreajuste severo.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.75\textwidth]{confusion_matrix.jpeg}
+  \includegraphics[width=1\textwidth]{confusion_matrix.jpeg}
   \caption{Matriz de confusión de MobileViT-small sobre el conjunto de test (7 clases).
   La clase \texttt{fondo} muestra el mayor número de predicciones correctas (649).
   Las mayores confusiones ocurren entre \texttt{crack}/\texttt{scratch} y
@@ -459,6 +529,7 @@ Observaciones clave:
   \item \textbf{crack / scratch:} confusión frecuente por similitud visual entre ambas
         clases en parches pequeños.
 \end{itemize}
+
 
 % =============================================================
 \section{Resultados y Ejemplos}
@@ -478,20 +549,45 @@ predicción del modelo. Se implementaron dos técnicas según la arquitectura:
         (Global Average Pooling) y se ponderan por canal para producir el mapa de calor.
 \end{itemize}
 
-Los mapas se generan con \texttt{scripts/visualizar\_atenciones.py} y se guardan en
-\texttt{reports/figuras/}. En ambos modelos, las zonas de mayor activación corresponden
+Los mapas se generan con \texttt{scripts/visualizar\_atenciones.py}. En ambos modelos, las zonas de mayor activación corresponden
 a la región del daño, lo que confirma que los modelos aprenden representaciones
 relevantes y no artefactos espurios.
 
+\subsection{Experimentos en MLFlow}
+
+Se registran como 2 experimentos o \texttt{Runs} separados: 
+
+\begin{itemize}
+  \item Uno para el entrenamiento (con logging de métricas por época)
+  \item Otro para la evaluación final sobre test y matriz de confusión
+\end{itemize}
+
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.85\textwidth]{model_eval.jpeg}
+  \includegraphics[width=0.9\textwidth]{model_train.jpeg}
+  \caption{Interfaz de entrenamiento del modelo en MLflow. Muestra las métricas de
+  desempeño sobre el conjunto de train, incluyendo accuracy y macro F1 por época.}
+\end{figure}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{model_eval.jpeg}
   \caption{Interfaz de evaluación del modelo en MLflow. Muestra las métricas de
   desempeño sobre el conjunto de test, incluyendo accuracy y macro F1 por época.}
 \end{figure}
 
+El modelo se registra en el Model Registry con alias \texttt{production}, lo que permite promover nuevas versiones sin necesidad de reiniciar la API.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=1\textwidth]{model_registry.jpeg}
+  \caption{Model Registry con alias \texttt{champion}.}
+\end{figure}
+
+El modelo se consume directamente desde la API mediante el alias, lo que permite promover nuevas versiones sin reiniciar el servicio.
+
 \subsection{Interfaces del sistema}
 
+\subsubsection{Interfaz Web}
 \begin{figure}[H]
   \centering
   \begin{subfigure}[b]{0.48\textwidth}
@@ -503,21 +599,24 @@ relevantes y no artefactos espurios.
     \includegraphics[width=\textwidth]{webui_v1_feedback.jpeg}
     \caption{UI web v1: sección de feedback humano integrada (paso 3).}
   \end{subfigure}
-  \caption{Web UI v1. La versión actualizada reemplaza los sliders por selección
-  interactiva de ROI mediante click y agrega la sección de corrección humana
-  directamente en la interfaz web, unificando el flujo RLHF en un solo paso.}
 \end{figure}
 
+Web UI v1. La versión actualizada reemplaza los sliders por selección interactiva de ROI mediante click y agrega la sección de corrección humana directamente en la interfaz web, unificando el flujo RLHF en un solo paso.
+
+\subsubsection{Interfaz Móvil}
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.45\textwidth]{phone_app.png}
   \caption{App iOS: selección de imagen y envío a la API.}
 \end{figure}
 
+Al igual que la interfaz web, la app iOS permite al usuario seleccionar o capturar una imagen, que se envía a la API para obtener la predicción. La corrección humana también se puede realizar desde la app, enviando el ROI y la clase correcta al endpoint de feedback.
+La idea es que en una segunda etapa, este modelo corra localmente en el dispositivo móvil, eliminando la necesidad de conexión a la API para inferencia.
+
 \subsection{Ejemplo de respuesta de la API}
 
 \noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}[language={},caption={Respuesta del endpoint \texttt{POST /predecir}.}]
+\begin{lstlisting}[language={},basicstyle=\ttfamily\scriptsize, caption={Respuesta del endpoint \texttt{POST /predecir}.}]
 {
   "clase": "scratch",
   "confianza": 0.82,
@@ -537,22 +636,6 @@ relevantes y no artefactos espurios.
 \end{lstlisting}
 \end{minipage}
 
-\subsection{MLflow: tracking y registro de modelos}
-
-\begin{figure}[H]
-  \centering
-  \begin{subfigure}[b]{0.48\textwidth}
-    \includegraphics[width=\textwidth]{model_train.jpeg}
-    \caption{Experimento de entrenamiento registrado en MLflow.}
-  \end{subfigure}
-  \hfill
-  \begin{subfigure}[b]{0.48\textwidth}
-    \includegraphics[width=\textwidth]{model_registry.jpeg}
-    \caption{Model Registry con alias \texttt{champion}.}
-  \end{subfigure}
-  \caption{Interfaz de MLflow mostrando el tracking de experimentos y el registro de modelos.
-  La API carga el modelo vía alias, permitiendo promoverse nuevas versiones sin reiniciar.}
-\end{figure}
 
 % =============================================================
 \section{Conclusiones y Mejoras Futuras}
@@ -580,6 +663,7 @@ relevantes y no artefactos espurios.
         del alcance de este proyecto y se propone como trabajo futuro.
 \end{enumerate}
 
+
 \subsection{Mejoras futuras}
 
 \subsubsection*{Migración a segmentación de instancias con Mask2Former}
@@ -589,6 +673,12 @@ entrenó y evaluó \textbf{Mask2Former con backbone Swin-Small}
 (\texttt{facebook/mask2former-swin-small-coco-instance}) sobre el dataset CarDD durante
 20 épocas, obteniendo los siguientes resultados en el conjunto de test:
 
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\textwidth]{mask2former-swim-train-loss.png}
+  \caption{Prueba de entrenamiento de Mask2Former-Swin-Small.}
+\end{figure}
+
 \begin{table}[H]
   \centering
   \begin{tabular}{lcc}
@@ -596,29 +686,50 @@ entrenó y evaluó \textbf{Mask2Former con backbone Swin-Small}
     \textbf{Tarea} & \textbf{mAP @ IoU 0.50:0.95} & \textbf{mAP @ IoU 0.50} \\
     \midrule
     Bounding box (bbox)        & 0,571 & 0,706 \\
-    Segmentación de instancias & 0,551 & 0,700 \\
+    Segmentación de instancias & 0,548 & 0,722 \\
     \bottomrule
   \end{tabular}
   \caption{Resultados de Mask2Former-Swin-Small sobre CarDD (test set, 20 épocas).}
 \end{table}
 
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\textwidth]{mask2former-swim-val.png}
+  \caption{Validación de Mask2Former-Swin-Small para detección de instancias y máscaras.}
+\end{figure}
+
 Estos resultados demuestran que la arquitectura de segmentación de instancias es un
 camino de mejora concreto y prometedor:
 
 \begin{itemize}
-  \item Un mAP@0.50 de \textbf{0,706 en detección} es competitivo considerando que el
-        modelo no fue entrenado con datos de dominio específico.
+  \item El modelo fue \textbf{ajustado (fine-tuning) sobre CarDD} durante 20 épocas.
+        En este contexto, un mAP@0.50 de \textbf{0,706} en detección bbox y
+        \textbf{0,722} en segmentación de instancias confirma un desempeño sólido para
+        el dominio automotriz.
+  \item En evaluación cuantitativa de segmentación, se obtuvieron
+        \texttt{segm\_mAP = 0,548}, \texttt{segm\_mAP50 = 0,722} y
+        \texttt{segm\_mAR100 = 0,623}, resultados consistentes con una buena capacidad
+        de recuperación de instancias.
   \item La segmentación de instancias permite delimitar con precisión el contorno del
         daño, información valiosa para estimaciones de reparación.
+  \item En pruebas cualitativas con imágenes externas al dataset, el modelo mantuvo
+        detecciones plausibles, lo que sugiere una generalización útil fuera del set de
+        entrenamiento.
   \item A diferencia de la estrategia de parches actual, Mask2Former procesa la imagen
         completa en una sola pasada, eliminando la necesidad de extraer ROIs manualmente.
   \item El desempeño en objetos pequeños (AP$_\text{small}$ = 0,051) indica que el
-        modelo aún tiene margen de mejora con augmentación específica y mayor resolución
-        de entrada.
+        modelo aún tiene margen de mejora, especialmente con augmentación específica para
+        objetos pequeños y mayor resolución de entrada.
 \end{itemize}
 
 La integración de Mask2Former como backend de inferencia de la API representa la
 \textbf{dirección de evolución prioritaria} del sistema.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.96\textwidth]{mask2former-swim-examples.png}
+  \caption{Ejemplos de detección en imágenes externas al dataset CarDD.}
+\end{figure}
 
 \subsubsection*{Otras mejoras}
 
@@ -636,7 +747,7 @@ La integración de Mask2Former como backend de inferencia de la API representa l
     Mayor robustez ante variaciones de dominio \\
     \rowcolor{rowgray}
     Augmentación diferencial para clases raras &
-    Mejorar recall en tire\_flat y glass\_shatter \\
+    Mejorar recall en tire\_flat y glass\_shatter utilizando SAM (Segment Anything Model)\\
     Activar WeightedRandomSampler en producción &
     Mitigar desbalance de clases en el entrenamiento \\
     \rowcolor{rowgray}
@@ -673,8 +784,8 @@ La integración de Mask2Former como backend de inferencia de la API representa l
   Descarga y preparación del dataset & Pablo Gomez & \textcolor{green!60!black}{Completado} \\
   Implementación \texttt{CarDamageDataset} & Pablo Gomez  & \textcolor{green!60!black}{Completado} \\
   \rowcolor{rowgray}
-  Entrenamiento DeiT-tiny & Pablo Gomez & \textcolor{green!60!black}{Completado} \\
-  Entrenamiento MobileViT-small & Pablo Gomez & \textcolor{green!60!black}{Completado} \\
+  Fine tuning MobileViT-small & Pablo Gomez & \textcolor{green!60!black}{Completado} \\
+  Fine tuning mask2former-swin-small & Pablo Gomez & \textcolor{green!60!black}{Completado} \\
   \rowcolor{rowgray}
   Evaluación y métricas (test set) & Pablo Gomez & \textcolor{green!60!black}{Completado} \\
   Visualización de atenciones (GradCAM) & Matias Tripode & \textcolor{green!60!black}{Completado} \\
@@ -691,7 +802,6 @@ La integración de Mask2Former como backend de inferencia de la API representa l
   Informe técnico & Pablo Gomez, Matias Tripode & \textcolor{orange!80!black}{En progreso} \\
   Tests de integración (issue \#11) & Por asignar & \textcolor{red!70!black}{Pendiente} \\
   \rowcolor{rowgray}
-  Fine-tuning & Por asignar & \textcolor{red!70!black}{Pendiente} \\
   Pipeline re-entrenamiento RLHF automático & --- & \textcolor{gray}{Fuera de alcance} \\
 \end{longtable}
 
