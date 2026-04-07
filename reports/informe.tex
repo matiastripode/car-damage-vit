@@ -88,13 +88,11 @@
 \vspace{1cm}
 
 \begin{abstract}
-Este informe documenta el desarrollo de un pipeline completo de clasificación de daños en
-vehículos utilizando Vision Transformers (ViT). Se evaluaron dos arquitecturas ligeras ---
-MobileViT-small y DeiT-tiny--- sobre el dataset CarDD, implementando una estrategia de
-parches centrados en regiones de interés. El sistema resultante incluye una API REST,
-una interfaz web, una app iOS y un mecanismo de retroalimentación humana (RLHF) con
-persistencia en MinIO, todo orquestado mediante Docker Compose. MobileViT-small obtuvo
-el mejor desempeño con 77,92\% de accuracy y 0,7596 de macro F1 en el conjunto de test.
+Este trabajo presenta el desarrollo de un pipeline integral para la clasificación automática de daños en vehículos a partir de imágenes, basado en modelos de Vision Transformers (ViT). Se exploran arquitecturas ligeras y eficientes, junto con una estrategia de procesamiento mediante parches centrados en regiones de interés, con el objetivo de mejorar la precisión en escenarios reales.
+
+El sistema implementado incluye componentes de inferencia y despliegue que abarcan una API REST, una interfaz web, una aplicación móvil y un mecanismo de retroalimentación humana (RLHF), permitiendo la mejora continua del modelo. Asimismo, el ciclo de vida del modelo es gestionado mediante MLflow, facilitando el versionado, monitoreo y reproducibilidad de los experimentos. La solución se integra en una arquitectura modular y escalable utilizando contenedores.
+
+Asimismo, se analizan alternativas avanzadas de segmentación de instancias para enriquecer la detección de regiones relevantes, evaluando su potencial como complemento del pipeline de clasificación.
 \end{abstract}
 
 \newpage
@@ -107,11 +105,11 @@ el mejor desempeño con 77,92\% de accuracy y 0,7596 de macro F1 en el conjunto 
 
 El objetivo principal de este proyecto es construir un sistema capaz de \textbf{identificar
 y clasificar automáticamente el tipo de daño presente en un vehículo} a partir de una
-imagen, con el fin de acelerar los procesos de peritaje y estimación de reparaciones.
+imagen, con el fin de acelerar los procesos de peritaje y estimación de reparaciones. Se considera dentro del alacen que el modelo se ejecute en un servidor de inferencia, para en una segunda etapa desplegarlo de forma local en el movil, eliminando la necesidad de conexión a la API para inferencia.
 
 \subsection*{Objetivos específicos}
 \begin{itemize}
-  \item Implementar una arquitectura completa de Vision Transformer ligero:
+  \item Implementar una arquitectura completa de Vision Transformer ligero: \\
         \texttt{apple/MobileViT-small} y \texttt{facebook/deit-tiny-patch16-224}, adecuadas para despliegue en
         dispositivos de recursos limitados.
   \item Desarrollar una estrategia de extracción de parches centrados en bounding boxes
@@ -123,32 +121,20 @@ imagen, con el fin de acelerar los procesos de peritaje y estimación de reparac
   \item Implementar un pipeline de entrenamiento reproducible con MLflow para tracking y
         registro de modelos, facilitando la iteración y mejora continua.
   \item Conexión segura HTTPs con Traefik como reverse proxy, garantizando la integridad y confidencialidad de los datos.
-  \item Evaluar una arquitectura mas compleja de segmentación de instancias (Mask2Former) con backbone SWIM \texttt{facebook/mask2former-swin-small-coco-instance} como posible mejora futura.
+  \item Evaluar una arquitectura mas compleja de segmentación de instancias (Mask2Former) con backbone SWIM \texttt{facebook/mask2former-swin-small-coco-instance} como mejora futura, para el uso de forma centralizada.
 \end{itemize}
 
 \subsection*{Dataset y Análisis Exploratorio}
 
 Se utilizó el dataset \textbf{CarDD} (\textit{Car Damage Detection Dataset}), disponible
 en HuggingFace. El análisis exploratorio completo fue realizado en el notebook
-\texttt{01\_eda\_cardd.ipynb} (Pablo Gomez).
+\texttt{01\_eda\_cardd.ipynb}.
 
-\textbf{Splits y volumen:}
-
-\begin{table}[H]
-  \centering
-  \begin{tabular}{lrr}
-    \toprule
-    \textbf{Split} & \textbf{Imágenes} & \textbf{Anotaciones} \\
-    \midrule
-    Train       & 1.971 & 4.332 \\
-    Validación  &   422 & 1.005 \\
-    Test        &   423 &   874 \\
-    \midrule
-    \textbf{Total} & \textbf{2.816} & \textbf{6.211} \\
-    \bottomrule
-  \end{tabular}
-  \caption{Distribución del dataset CarDD. Promedio: 2,21 instancias por imagen.}
-\end{table}
+\textbf{Volumen global analizado (EDA):}
+\begin{itemize}
+  \item \textbf{2.816 imágenes}, \textbf{6.211 anotaciones} y \textbf{6 clases} de daño.
+  \item Promedio de \textbf{2,21 instancias por imagen}.
+\end{itemize}
 
 Las anotaciones están en formato COCO (bounding boxes + máscaras de segmentación,
 exportadas con FiftyOne). La verificación de integridad del EDA confirmó
@@ -181,6 +167,13 @@ exportadas con FiftyOne). La verificación de integridad del EDA confirmó
   medium $32^2$--$96^2$, large $\geq 96^2$ píxeles).}
 \end{table}
 
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\textwidth]{metricas/clases.png}
+  \caption{Distribución de instancias por clase.}
+\end{figure}
+
+
 Dos observaciones críticas para el entrenamiento:
 
 \begin{itemize}
@@ -188,10 +181,16 @@ Dos observaciones críticas para el entrenamiento:
         tire\_flat tiene 11,4$\times$ menos instancias que scratch, lo que justifica el
         uso de \texttt{WeightedRandomSampler}.
   \item \textbf{crack es la clase más difícil:} el 39\% de sus instancias son objetos
-        pequeños (small), con un área mediana de solo 6.517 px$^2$ frente a
+        pequeños (small), con un \textbf{bbox\_area} mediano de solo 6.517 px$^2$ frente a
         443.770 px$^2$ de glass\_shatter. Esto explica las confusiones observadas en la
         matriz de confusión.
 \end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\textwidth]{metricas/tamaños.png}
+  \caption{Distribución de tamaños por instancia.}
+\end{figure}
 
 \textbf{Índice de dificultad por clase} (compuesto por proporción de objetos pequeños,
 ratio máscara/imagen y densidad de instancias):
@@ -227,6 +226,20 @@ combinados.
 Se agrega clase adicional \texttt{fondo} (background) durante la extracción de parches,
 resultando en \textbf{7 clases totales} para el clasificador.
 
+\textbf{Implicancias del EDA para clasificación de imágenes (parches ROI):}
+\begin{itemize}
+  \item \textbf{Baseline de referencia:} una política trivial de clase mayoritaria estaría
+        cercana al 41,2\% (clase scratch), por lo que \textit{accuracy} sola no es suficiente.
+  \item \textbf{Métricas utilizadas en el pipeline:} \textit{accuracy},
+        \textit{Macro-F1}, \textit{F1 por clase} y matriz de confusión.
+  \item \textbf{Complejidad de escena:} con 2,21 instancias por imagen y co-ocurrencia
+        dent--scratch alta, conviene explicitar que la clasificación se realiza sobre
+        ROI/patches para evitar ambigüedades de \textit{label} a nivel imagen completa.
+  \item \textbf{Sensibilidad espacial:} 32,9\% de las instancias están a menos de 2\% del
+        borde, por lo que es importante preservar contexto de borde en \textit{crops} y
+        aumentos.
+\end{itemize}
+
 % =============================================================
 \section{Arquitectura General}
 % =============================================================
@@ -236,11 +249,12 @@ resultando en \textbf{7 clases totales} para el clasificador.
 \begin{figure}[H]
   \centering
   \includegraphics[width=\textwidth]{Diagrama_app.png}
-  \caption{Arquitectura del sistema Car Damage ViT. El tráfico HTTPS ingresa por
-  Traefik, que enruta hacia la API FastAPI y la UI Streamlit. MLflow gestiona el
-  registro de modelos y MinIO almacena los datos de retroalimentación RLHF.}
+  \caption{Arquitectura del sistema Car Damage ViT. }
 \end{figure}
 
+El tráfico HTTPS ingresa por Traefik, que enruta hacia la API FastAPI y la UI Streamlit. MLflow gestiona el registro de modelos y MinIO almacena los datos de retroalimentación RLHF.
+
+La aplicación móvil iOS se comunica directamente con la API para inferencia y envío de feedback, mientras que la UI web permite selección interactiva de ROI y envío de correcciones humanas.
 \subsection{Componentes del sistema}
 
 \begin{table}[H]
@@ -318,6 +332,46 @@ Se realizaron pruebas preliminares para elegir con que modelo trabajar en el pro
   warmup ratio=0.1 y seed=42.}
 \end{table}
 
+\subsection{MobileViT-small: Arquitectura híbrida CNN + Transformer}
+
+Según el paper original de MobileViT (\texttt{arXiv:2110.02178}), el objetivo es
+combinar la \textbf{eficiencia local} de las CNN con la \textbf{modelación global}
+de los Transformers en un backbone apto para dispositivos móviles.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\textwidth]{Diagrama_MobileViT.png}
+  \caption{MobileViT enfatiza el uso de ViTs ligeros, de baja latencia, y precisos para aplicaciones en dispositivos con recursos restringidos.}
+\end{figure}
+
+
+\textbf{Idea central del bloque MobileViT (``transformers as convolutions''):}
+\begin{enumerate}
+  \item Se extraen \textbf{representaciones locales} con convoluciones
+        (conv $n\times n$ + conv $1\times1$).
+  \item El mapa se ``\textit{unfold}'' en parches pequeños, se procesa con
+        bloques Transformer para capturar \textbf{contexto global}, y luego se
+        ``\textit{fold}'' nuevamente al espacio espacial.
+  \item Se aplica una etapa de \textbf{fusión} con convoluciones para mezclar
+        información local + global en la salida del bloque.
+\end{enumerate}
+
+Esta formulación reemplaza el procesamiento local de una convolución estándar por
+procesamiento global con autoatención, manteniendo un diseño liviano y práctico
+para inferencia móvil.
+
+\textbf{Ventajas reportadas en el paper:}
+\begin{itemize}
+  \item \textbf{Mejor compromiso precisión/parámetros:} en ImageNet-1k, MobileViT
+        reporta 78,4\% top-1 con $\sim$6M de parámetros, superando en ese rango
+        a MobileNetV3 (+3,2 pp) y DeiT (+6,2 pp).
+  \item \textbf{Backbone generalista:} también muestra mejoras en tareas densas
+        (detección/segmentación), no solo en clasificación.
+  \item \textbf{Enfoque mobile-first:} el trabajo enfatiza que optimizar solo FLOPs
+        no garantiza baja latencia real en móvil; por eso prioriza diseño liviano,
+        latencia y facilidad de integración en pipelines de visión.
+\end{itemize}
+
 Ambos modelos se cargan desde HuggingFace con \texttt{AutoModelForImageClassification},
 reemplazando la cabeza de clasificación por una capa lineal de 7 salidas \\
 (\texttt{src/vit/models/factory.py}):
@@ -342,11 +396,62 @@ La orquestación end-to-end se realiza con
 \texttt{scripts/pipeline\_entrenar\_evaluar.py}. Este script coordina preparación de
 datos, entrenamiento y evaluación en una única ejecución reproducible.
 
-\textbf{Flujo operativo (8 etapas):}
+\subsubsection{Splits operativos para entrenamiento/evaluación:}
+\begin{table}[H]
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    \textbf{Split} & \textbf{Imágenes} & \textbf{Anotaciones} \\
+    \midrule
+    Train       & 1.971 & 4.332 \\
+    Validación  &   422 & 1.005 \\
+    Test        &   423 &   874 \\
+    \midrule
+    \textbf{Total} & \textbf{2.816} & \textbf{6.211} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Distribución utilizada en el pipeline de entrenamiento/evaluación.}
+\end{table}
+
+\subsubsection{Procesamiento de imágenes en entrenamiento:}
+\begin{itemize}
+  \item \textbf{Entrada del pipeline:} orquesta \texttt{descargar\_dataset.py},
+        \texttt{exportar\_anotaciones.py} y luego \texttt{entrenar.py}.
+  \item \textbf{Conversión a COCO:} \texttt{exportar\_anotaciones.py} convierte los
+        \texttt{bbox} normalizados de FiftyOne a coordenadas absolutas en píxeles
+        para \texttt{train/validation/test.json}.
+  \item \textbf{Estrategia de parcheo (224$\times$224):} en
+        \texttt{CarDamageDataset} se genera un parche positivo centrado por cada
+        anotación de daño y, además, parches de \texttt{fondo} con
+        \texttt{ratio\_fondo=1.0} (configurable) evitando solapamiento relevante con
+        daños (IoU $< 0.1$).
+  \item \textbf{Transforms de entrenamiento:}
+        \texttt{RandomResizedCrop(224, scale=(0.8,1.0))},
+        \texttt{RandomHorizontalFlip}, \texttt{RandomRotation(15)},
+        \texttt{ColorJitter}, \texttt{Normalize(mean/std del processor)}, \texttt{ToTensor}
+        y \texttt{RandomErasing}. Estas transformaciones ayudan a:
+        \begin{enumerate}
+          \item Mejorar robustez a cambios de escala/orientación/iluminación (\texttt{crop}, \texttt{flip}, \texttt{rotation}, \texttt{color jitter})
+          \item Reducir sobreajuste a texturas puntuales y oclusiones parciales (\texttt{random erasing})
+          \item Estabilizar la entrada al backbone preentrenado (\texttt{normalize})
+        \end{enumerate}
+          En relación con el EDA, esto es especialmente útil para clases difíciles
+          con alta proporción de objetos pequeños (como \texttt{crack}) y para daños
+          cercanos a bordes, donde pequeñas variaciones geométricas pueden cambiar
+          la evidencia visual disponible en el parche.
+        
+  \item \textbf{Transforms de validación/test:} solo \texttt{ToTensor} +
+        \texttt{Normalize}, sin augmentaciones estocásticas.
+  \item \textbf{Muestreo balanceado:} el \texttt{DataLoader} de train usa
+        \texttt{WeightedRandomSampler} con pesos inversos a la frecuencia de clase para
+        mitigar el desbalance observado en EDA.
+\end{itemize}
+
+\subsubsection{Flujo operativo del pipeline de entrenamiento(8 etapas):}
 \begin{enumerate}
   \item \textbf{Parseo de argumentos de entrada:} \texttt{--config} (requerido),
         \texttt{--env} (\texttt{dev|staging|prod}) y flags opcionales de MLflow
-        (\texttt{--mlflow-uri}, \texttt{--mlflow-train-experiment},
+        (\texttt{--mlflow-uri}, \texttt{--mlflow-train-experiment}, \\
         \texttt{--mlflow-eval-experiment}, \texttt{--mlflow-register-name}).
   \item \textbf{Resolución de configuración:} la ruta YAML se normaliza contra la raíz
         del repositorio cuando se pasa como relativa; si es absoluta, se usa sin cambios.
@@ -361,7 +466,7 @@ datos, entrenamiento y evaluación en una única ejecución reproducible.
         tenga el módulo \texttt{mlflow} instalado antes de iniciar entrenamiento.
   \item \textbf{Entrenamiento:}
         se invoca \texttt{scripts/entrenar.py} propagando \texttt{config} y \texttt{env},
-        y opcionalmente parámetros de tracking/registro en MLflow.
+        y opcionalmente parámetros de tracking/registro en MLflow. \\
         En este paso, \texttt{src/vit/train/trainer.py} aporta
         \textbf{early stopping}, \textbf{checkpointing} del mejor modelo y
         \textbf{logging} de métricas/artefactos en MLflow.
@@ -564,13 +669,13 @@ Se registran como 2 experimentos o \texttt{Runs} separados:
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.9\textwidth]{model_train.jpeg}
+  \includegraphics[width=1\textwidth]{model_train.jpeg}
   \caption{Interfaz de entrenamiento del modelo en MLflow. Muestra las métricas de
   desempeño sobre el conjunto de train, incluyendo accuracy y macro F1 por época.}
 \end{figure}
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.9\textwidth]{model_eval.jpeg}
+  \includegraphics[width=1\textwidth]{model_eval.jpeg}
   \caption{Interfaz de evaluación del modelo en MLflow. Muestra las métricas de
   desempeño sobre el conjunto de test, incluyendo accuracy y macro F1 por época.}
 \end{figure}
@@ -666,8 +771,57 @@ La idea es que en una segunda etapa, este modelo corra localmente en el disposit
 
 \subsection{Mejoras futuras}
 
-\subsubsection*{Migración a segmentación de instancias con Mask2Former}
+\begin{itemize}
+  \item Ejecución del modelo MobileViT directamente en el mobile.
+  \item Servidor de inferencia y WebUI para la ejecución de Mask2Former, con el objetivo de obtener segmentación de instancias y máscaras precisas que permitan delimitar el contorno del daño, información valiosa para estimaciones de reparación en imagenes de campo amplio.
+  \item Implementar RLHF con re-entrenamiento automático utilizando los datos de feedback almacenados en MinIO, cerrando el ciclo de mejora continua del modelo.
+\end{itemize}
 
+
+\subsubsection{Detección y segmentación de instancias con SWIN+Mask2Former}
+
+Basado en el paper de referencia \texttt{arXiv:2112.01527}
+(\textit{Masked-attention Mask Transformer for Universal Image Segmentation}),
+Mask2Former propone una arquitectura \textbf{unificada} para segmentación semántica,
+de instancias y panóptica sobre una misma base de \textit{mask classification}.
+
+\textbf{Componentes principales de la arquitectura:}
+\begin{itemize}
+  \item \textbf{Backbone Swin Transformer \texttt{ICCV 2021, Swin Transformer}:} la imagen se divide en parches y se
+        procesa en una arquitectura jerárquica por etapas, donde cada etapa reduce la
+        resolución y aumenta canales mediante \textit{patch merging} (análogo a una
+        pirámide de features). Dentro de cada etapa, la atención se calcula en ventanas
+        locales no superpuestas (\textit{W-MSA}) y en la capa siguiente se desplazan las
+        ventanas (\textit{SW-MSA}) para habilitar interacción entre ventanas vecinas.
+        Esta combinación preserva contexto local y conexión global progresiva con costo
+        computacional aproximadamente lineal respecto al tamaño de imagen, lo que lo
+        vuelve especialmente útil como backbone para tareas densas (detección/segmentación).
+        \begin{figure}[H]
+          \centering
+          \includegraphics[width=0.4\textwidth]{swin_transformer.png}
+          \caption{Mecanismo de atención jerárquica basado en ventanas deslizantes.}
+        \end{figure}
+        
+  \item \textbf{Pixel decoder:} fusiona y refina features de múltiples resoluciones
+        para producir embeddings por píxel de mayor calidad.
+  \item \textbf{Transformer decoder con \textit{masked attention}:} cada \textit{query}
+        atiende principalmente dentro de su región de máscara predicha, en lugar de
+        atender toda la imagen como en la \textit{cross-attention} estándar.
+        Esto mejora convergencia y precisión, especialmente en segmentación de instancias.
+\end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.5\textwidth]{Diagrama_Mask2Former_swin.png}
+  \caption{Arquitectura de Mask2Former-Swin.}
+\end{figure}
+
+\textbf{Idea clave de Mask2Former (arXiv:2112.01527):}
+la atención enmascarada y el uso eficiente de features de alta resolución/multiescala
+permiten una segmentación más precisa (incluyendo objetos pequeños) con una receta
+de entrenamiento más estable que enfoques universales previos.
+
+\subsubsection{Fine-tuning de Mask2Former-Swin-Small sobre CarDD}
 Como parte de la exploración de mejoras, se
 entrenó y evaluó \textbf{Mask2Former con backbone Swin-Small}
 (\texttt{facebook/mask2former-swin-small-coco-instance}) sobre el dataset CarDD durante
@@ -675,7 +829,7 @@ entrenó y evaluó \textbf{Mask2Former con backbone Swin-Small}
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.7\textwidth]{mask2former-swim-train-loss.png}
+  \includegraphics[width=0.65\textwidth]{mask2former-swim-train-loss.png}
   \caption{Prueba de entrenamiento de Mask2Former-Swin-Small.}
 \end{figure}
 
@@ -694,11 +848,58 @@ entrenó y evaluó \textbf{Mask2Former con backbone Swin-Small}
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.7\textwidth]{mask2former-swim-val.png}
+  \includegraphics[width=0.65\textwidth]{mask2former-swim-val.png}
   \caption{Validación de Mask2Former-Swin-Small para detección de instancias y máscaras.}
 \end{figure}
 
-Estos resultados demuestran que la arquitectura de segmentación de instancias es un
+\textbf{Métricas de medición para CarDD (COCO)}
+
+Estas métricas se calculan sobre dos tareas relacionadas:
+\begin{itemize}
+  \item \texttt{bbox\_*}: calidad de \textbf{detección} (localización con cajas).
+  \item \texttt{segm\_*}: calidad de \textbf{segmentación de instancia} (máscara por daño).
+\end{itemize}
+
+\textbf{Métricas de detección (\texttt{bbox})}
+\begin{itemize}
+  \item \texttt{bbox\_mAP}: promedio de AP (\textit{Average Precision}) sobre múltiples
+        umbrales IoU (0.50:0.95). Es la métrica más estricta y representativa del
+        rendimiento general. En CarDD indica qué tan bien el modelo localiza distintos
+        tipos de daño (desde raspones pequeños hasta daños grandes).
+  \item \texttt{bbox\_mAP50}: AP con IoU=0.50. Es más permisiva que
+        \texttt{bbox\_mAP}, por eso suele ser más alta. En CarDD sirve para verificar
+        si el modelo ``encuentra'' daños de forma general, aunque la caja no sea
+        muy precisa.
+  \item \texttt{bbox\_mAR100}: \textit{recall} promedio permitiendo hasta 100
+        predicciones por imagen. En CarDD es útil porque puede haber múltiples daños
+        por imagen; refleja cuántos daños reales logra recuperar el modelo.
+\end{itemize}
+
+\textbf{Métricas de segmentación (\texttt{segm})}
+\begin{itemize}
+  \item \texttt{segm\_mAP}: promedio de AP sobre IoU 0.50:0.95 usando máscaras.
+        Mide calidad global de segmentación y es exigente en el contorno. En CarDD es
+        clave porque hay clases finas (ej. \texttt{crack}, \texttt{scratch}) donde la
+        forma del daño importa.
+  \item \texttt{segm\_mAP50}: AP de segmentación con IoU=0.50. Es más tolerante al
+        detalle fino del borde. En CarDD ayuda a evaluar si la máscara cubre la región
+        correcta, aunque no sea perfecta en contornos.
+  \item \texttt{segm\_mAR100}: \textit{recall} promedio en segmentación con hasta 100
+        predicciones por imagen. En CarDD complementa a \texttt{segm\_mAP}, mostrando
+        si el modelo se está ``perdiendo'' daños en escenas con varias instancias.
+\end{itemize}
+
+\textbf{Lectura práctica para este proyecto}
+\begin{itemize}
+  \item Si \texttt{bbox\_*} $>$ \texttt{segm\_*} por mucho margen: el modelo detecta daños,
+        pero falla en delinear bien la máscara.
+  \item Si \texttt{mAP50} es alto pero \texttt{mAP} cae: hay aciertos gruesos, pero falta
+        precisión fina (común en daños pequeños o finos).
+  \item Si \texttt{mAR100} es bajo: el modelo está dejando daños sin detectar, incluso
+        permitiendo muchas predicciones por imagen.
+\end{itemize}
+
+Los resultados demuestran que la arquitectura de segmentación de instancias es un
 camino de mejora concreto y prometedor:
 
 \begin{itemize}
@@ -723,11 +924,11 @@ camino de mejora concreto y prometedor:
 \end{itemize}
 
 La integración de Mask2Former como backend de inferencia de la API representa la
-\textbf{dirección de evolución prioritaria} del sistema.
+\textbf{dirección de evolución prioritaria} del sistema centralizado.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.96\textwidth]{mask2former-swim-examples.png}
+  \includegraphics[width=0.9\textwidth]{mask2former-swim-examples.png}
   \caption{Ejemplos de detección en imágenes externas al dataset CarDD.}
 \end{figure}
 
@@ -741,21 +942,13 @@ La integración de Mask2Former como backend de inferencia de la API representa l
     \textbf{Mejora} & \textbf{Impacto esperado} \\
     \midrule
     \rowcolor{rowgray}
-    Análisis de F1 por clase (tire\_flat, glass\_shatter) &
-    Identificar clases con bajo rendimiento \\
-    Fine-tuning con CLIP &
-    Mayor robustez ante variaciones de dominio \\
-    \rowcolor{rowgray}
     Augmentación diferencial para clases raras &
     Mejorar recall en tire\_flat y glass\_shatter utilizando SAM (Segment Anything Model)\\
-    Activar WeightedRandomSampler en producción &
-    Mitigar desbalance de clases en el entrenamiento \\
-    \rowcolor{rowgray}
     Análisis de errores: crack vs.\ scratch, lamp\_broken vs.\ glass\_shatter &
     Reducir confusiones entre clases similares \\
+    \rowcolor{rowgray}
     Implementar tests de integración (issue \#11) &
     Mayor cobertura y confiabilidad del pipeline \\
-    \rowcolor{rowgray}
     Pipeline de re-entrenamiento automático con datos RLHF &
     Utilizar el feedback almacenado en MinIO para ciclos de mejora continua \\
     \bottomrule
@@ -805,7 +998,7 @@ La integración de Mask2Former como backend de inferencia de la API representa l
   Pipeline re-entrenamiento RLHF automático & --- & \textcolor{gray}{Fuera de alcance} \\
 \end{longtable}
 
-\vspace{1cm}
+\vspace{0.5cm}
 
 \begin{center}
   \small\textit{Car Damage ViT — Pablo Gomez \& Matias Tripode — Abril 2026}
