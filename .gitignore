@@ -59,6 +59,8 @@ reports/figuras/*
 !reports/figuras/.gitkeep
 !reports/informe.tex
 !reports/informe.pdf
+!reports/Automated_Vehicle_Damage_Diagnostics.pptx
+!reports/Automated_Vehicle_Damage_Diagnostics.pdf
 
 # IDEs
 .vscode/
