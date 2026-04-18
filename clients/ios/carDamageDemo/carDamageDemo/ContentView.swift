@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var feedbackEnviado = false
     @State private var enviandoFeedback = false
     @State private var claseSeleccionada = clasesDisponibles[0]
+    @State private var modoLocal = false
 
     var body: some View {
         NavigationStack {
@@ -24,6 +25,9 @@ struct ContentView: View {
                         .frame(maxHeight: 300)
                         .cornerRadius(12)
                 }
+
+                Toggle("Modo sin conexión (on-device)", isOn: $modoLocal)
+                    .padding(.horizontal)
 
                 PhotosPicker(
                     "Seleccionar foto",
@@ -58,7 +62,11 @@ struct ContentView: View {
                     cargando = true
 
                     do {
-                        prediccion = try await APIService.predecir(imagen: ui)
+                        if modoLocal {
+                            prediccion = try LocalClassifier().predecir(imagen: ui)
+                        } else {
+                            prediccion = try await APIService.predecir(imagen: ui)
+                        }
                     } catch {
                         errorMsg = error.localizedDescription
                     }

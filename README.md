@@ -9,10 +9,15 @@ Clasificación de daños en vehículos usando Vision Transformers.
 ```mermaid
 graph TB
     subgraph iPhone["📱 iPhone — SwiftUI App"]
-        UI["ContentView\nPhotosPicker + ResultadoView"]
+        UI["ContentView\nPhotosPicker + ResultadoView\nToggle modo local/API"]
         SVC["APIService\nmultipart/form-data POST"]
-        UI -->|"UIImage seleccionada"| SVC
+        LC["LocalClassifier\nCoreML on-device"]
+        MLPKG[("CarDamageClassifier\n.mlpackage\n~20 MB")]
+        UI -->|"modo API"| SVC
+        UI -->|"modo local"| LC
+        LC -->|"carga"| MLPKG
         SVC -->|"Prediccion (clase, confianza, top3)"| UI
+        LC -->|"Prediccion (clase, confianza, top3)"| UI
     end
 
     subgraph Backend["🐳 Docker Compose Stack"]
@@ -110,6 +115,105 @@ sequenceDiagram
     Svc-->>App: Prediccion(clase, confianza, top3)
     App->>App: prediccion = result\ncargando = false
     App->>Usuario: Muestra ResultadoView\n─ clase en mayúsculas\n─ barra de confianza\n─ top 3 con porcentajes
+```
+
+---
+
+## Edge AI — Inferencia on-device (CoreML)
+
+MobileViT-small fue exportado a `.mlpackage` mediante `scripts/exportar_coreml.py` y puede correr directamente en el Neural Engine del iPhone sin red ni servidor.
+
+```mermaid
+flowchart TD
+    subgraph Train["🔬 Entrenamiento (offline, macOS)"]
+        PT["best_model.pt\nMobileViT-small PyTorch\nval_f1 = 0.76"]
+        SCRIPT["exportar_coreml.py\ntorch.jit.trace + coremltools 9"]
+        NORM["_LogitsWrapper\nbake-in ImageNet norm\nmean/std como buffers"]
+        PT --> NORM --> SCRIPT
+    end
+
+    subgraph Convert["⚙️ Conversión CoreML"]
+        TRACE["TorchScript trace\nstrict=False"]
+        MIL["MIL pipeline\n812 ops"]
+        MLPKG[("CarDamageClassifier\n.mlpackage\n~20 MB")]
+        SCRIPT --> TRACE --> MIL --> MLPKG
+    end
+
+    subgraph Xcode["🛠 Xcode"]
+        GEN["Auto-genera\nCarDamageClassifierInput\nCarDamageClassifierOutput"]
+        MLPKG -->|"drag & drop"| GEN
+    end
+
+    subgraph iPhone["📱 iPhone (on-device · sin red)"]
+        UI["ContentView\nToggle ON → modo local"]
+        LC["LocalClassifier.swift"]
+        PIX["UIImage → CGImage\n→ CVPixelBuffer 224×224"]
+        COREML["CoreML Runtime\nNeural Engine / CPU"]
+        LOGITS["MultiArray Float32\n1×7 logits"]
+        SM["Softmax manual\nSwift"]
+        TOP3["Prediccion\nclase · confianza · top3"]
+
+        UI -->|"UIImage"| LC
+        LC --> PIX
+        PIX -->|"pixel_values\nscale 1/255"| COREML
+        COREML --> LOGITS
+        LOGITS --> SM
+        SM --> TOP3
+        TOP3 -->|"ResultadoView"| UI
+    end
+
+    GEN -.->|"bundled en app"| COREML
+
+    style Train fill:#1e3a5f,color:#fff
+    style Convert fill:#2d4a2d,color:#fff
+    style Xcode fill:#4a3a1e,color:#fff
+    style iPhone fill:#3a1e4a,color:#fff
+```
+
+### Comparación de modos
+
+| | Modo API | Modo Edge AI |
+|---|---|---|
+| **Dónde corre** | Docker (CPU) en Mac | Neural Engine del iPhone |
+| **Red requerida** | Sí (HTTPS localhost) | No |
+| **Latencia** | ~200–500 ms | ~50–150 ms |
+| **RLHF / feedback** | Sí (MinIO) | No |
+| **Toggle** | OFF | ON |
+
+### Cómo generar el `.mlpackage`
+
+```bash
+conda activate car-damage-vit
+python scripts/exportar_coreml.py
+# → checkpoints/mobilevit_small/CarDamageClassifier.mlpackage
+```
+
+---
+
+## Flujo de interacción — demo iPhone (modo Edge AI)
+
+```mermaid
+sequenceDiagram
+    actor Usuario
+    participant App as ContentView<br/>(SwiftUI)
+    participant LC as LocalClassifier<br/>(Swift)
+    participant CM as CoreML Runtime<br/>(Neural Engine · iPhone)
+    participant SW as Softmax<br/>(Swift)
+
+    Usuario->>App: Toggle "Modo sin conexión" ON
+    Usuario->>App: Selecciona foto (PhotosPicker)
+    App->>App: onChange → UIImage\ncargando = true
+    App->>LC: LocalClassifier().predecir(imagen)
+    LC->>LC: UIImage → CGImage\nCarDamageClassifierInput(pixel_valuesWith:)
+    LC->>CM: model.prediction(input)
+    Note over CM: scale 1/255 aplicado por ImageType<br/>ImageNet norm baked-in en wrapper<br/>812 ops MobileViT
+    CM-->>LC: CarDamageClassifierOutput<br/>MultiArray Float32 1×7 (logits)
+    LC->>SW: exp(logits) / Σexp(logits)
+    SW-->>LC: probs [String: Double]\nsuman 1.0
+    LC-->>App: Prediccion(clase, confianza, top3)<br/>rlhfStorage = nil
+    App->>App: prediccion = result\ncargando = false
+    App->>Usuario: ResultadoView\n─ clase en mayúsculas\n─ barra de confianza\n─ top 3 con porcentajes
+    Note over App,Usuario: Sin red · Sin servidor · Sin latencia de red
 ```
 
 ---
